@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+*.egg-info/
+
+# Secrets — never commit these
+.env
+
+# Output files
+*.zip
+datadog_raw_*.json
+datadog_usage_*.csv
+coralogix_sizing_*.xlsx
+report_*.html
