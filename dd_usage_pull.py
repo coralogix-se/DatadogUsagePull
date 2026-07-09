@@ -644,9 +644,9 @@ def compute_coralogix_sizing(snap: UsageSnapshot) -> CoralogixSizing:
     cx.daily_logs_comp_gb = cx.daily_logs_gb * LOG_TIER_COMP
 
     # ── Metrics ──────────────────────────────────────────────────────────────
-    # Hosts = infra + apm + profiled + fargate types (from Excel: A4+A8+B8+F6+C10+B10)
+    # Hosts = infra + apm + profiled + network + fargate types
     cx.host_count = (
-        snap.infra_hosts + snap.apm_hosts + snap.profiled_hosts
+        snap.infra_hosts + snap.apm_hosts + snap.profiled_hosts + snap.network_hosts
         + snap.fargate_tasks + snap.profiled_fargate + snap.apm_fargate
     )
     cx.container_count = snap.containers + snap.profiled_containers
@@ -1152,7 +1152,7 @@ def generate_xlsx(
             ("  Compliance (30%)",            cx.daily_logs_comp_gb,           "GB/day",     "daily × 0.30"),
         ]),
         ("METRICS", _GREEN_L, [
-            ("Host Count (all types incl. fargate)", cx.host_count,         "hosts",       "infra+apm+profiled+fargate types"),
+            ("Host Count (all types incl. fargate)", cx.host_count,         "hosts",       "infra+apm+profiled+network+fargate"),
             ("Container Count",               cx.container_count,              "containers", "containers + profiled_containers"),
             ("Host+Container TS",             cx.host_container_ts,            "NumSeries",  "(hosts+containers) × 750"),
             ("Serverless Functions TS",       cx.sw_func_ts,                   "NumSeries",  "daily_functions × 0.30"),
@@ -1603,7 +1603,7 @@ tr:last-child td{{border-bottom:none}}
   <table class="detail">
     <thead><tr><th>Metric</th><th>Value</th><th>Note</th></tr></thead>
     <tbody>
-      {_drow("Hosts (all types)", f"{cx.host_count:,.0f}", "infra + apm + profiled + fargate")}
+      {_drow("Hosts (all types)", f"{cx.host_count:,.0f}", "infra + apm + profiled + network + fargate")}
       {_drow("Containers",        f"{cx.container_count:,.0f}")}
       {_drow("Host+Container TS", f"{cx.host_container_ts:,.0f}", f"× {TS_PER_HOST} each")}
       {_drow("Custom Metrics",    f"{snap.custom_metrics:,.0f}")}
