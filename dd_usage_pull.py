@@ -67,6 +67,7 @@ AVG_SPAN_SIZE_KB = 1.5     # assumed average span payload size
 TS_PER_HOST      = 750     # estimated Prometheus/DD time series per host or container
 TS_TO_UNITS      = 3.3e-5  # Coralogix metrics: TimeSeries → Units/day conversion
 DAYS_PER_MONTH   = 30.0    # used for all monthly → daily conversions
+HOURS_PER_MONTH  = 30.0 * 24  # 720 — Datadog _sum fields for hosts/containers are in host-hours
 SW_LABEL_FACTOR  = 0.30    # serverless TS = invocations × 3 labels × 10% unique = ×0.30
 LOG_TIER_FS      = 0.50    # Frequent Search share of ingested logs
 LOG_TIER_MON     = 0.40    # Monitoring share
@@ -179,11 +180,12 @@ class UsageSnapshot:
     pulled_at:    str   = ""
 
     # ── Infrastructure ──────────────────────────────────────────────────────
-    infra_hosts:  float = 0   # Infra Hosts tile
-    apm_hosts:    float = 0   # APM Hosts tile
-    containers:   float = 0   # Container Hours tile
-    network_hosts: float = 0  # Network Hosts tile
-    dbm_hosts:    float = 0   # DBM Hosts tile
+    infra_hosts:    float = 0   # Infra Hosts tile (concurrent count)
+    apm_hosts:      float = 0   # APM Hosts tile (concurrent count)
+    containers:     float = 0   # concurrent container count (for sizing formulas)
+    container_hours: float = 0  # Container Hours tile (total host-hours in month)
+    network_hosts:  float = 0   # Network Hosts tile
+    dbm_hosts:      float = 0   # DBM Hosts tile
 
     # ── Profiling ───────────────────────────────────────────────────────────
     profiled_hosts:      float = 0
@@ -332,115 +334,281 @@ def extract_usage_snapshot(
                 item = u
                 break
 
-        snap.account_name = item.get("org_name", "")
-        snap.region       = item.get("region", "")
+        # Account name: try top-level first, then orgs[0]
+        snap.account_name = item.get("account_name", item.get("org_name", ""))
+        if not snap.account_name:
+            orgs = item.get("orgs", [])
+            if orgs:
+                snap.account_name = orgs[0].get("account_name", orgs[0].get("org_name", ""))
+        snap.region = item.get("region", "")
 
-        # Infrastructure — try both "parent-org aggregated" (_sum) and plain forms
+        # Infrastructure
+        # IMPORTANT: Datadog's v2 API uses "_sum" fields that represent TOTAL HOST-HOURS
+        # for the month (not a concurrent count). We divide by HOURS_PER_MONTH (720) to
+        # recover the average concurrent host count for sizing purposes.
+        # "top99p" fields are already a concurrent count (peak), so they're used as-is.
+
+        def _hosts_from_hours(hours_field: str, *top99p_fields: str) -> float:
+            """Try top99p (count) first; fall back to hours ÷ 720."""
+            for k in top99p_fields:
+                v = _f(item, k)
+                if v: return v
+            h = _f(item, hours_field)
+            return h / HOURS_PER_MONTH if h else 0.0
+
+        # Sum all host types; prefer top99p counts, fall back to hours/720
         snap.infra_hosts = (
-            _f(item, "agent_host_top99p_sum", "agent_host_top99p")
-            + _f(item, "aws_host_top99p_sum", "aws_host_top99p")
-            + _f(item, "azure_host_top99p_sum", "azure_host_top99p")
-            + _f(item, "gcp_host_top99p_sum", "gcp_host_top99p")
-            + _f(item, "vsphere_host_top99p_sum", "vsphere_host_top99p")
-            + _f(item, "alibaba_host_top99p_sum")
-            + _f(item, "heroku_host_top99p_sum")
-        ) or _f(item, "infra_host_top99p_sum", "infra_host_top99p")
+            _hosts_from_hours("agent_host_sum",       "agent_host_top99p_sum",   "agent_host_top99p")
+            + _hosts_from_hours("aws_host_sum",       "aws_host_top99p_sum",     "aws_host_top99p")
+            + _hosts_from_hours("azure_host_sum",     "azure_host_top99p_sum",   "azure_host_top99p")
+            + _hosts_from_hours("gcp_host_sum",       "gcp_host_top99p_sum",     "gcp_host_top99p")
+            + _hosts_from_hours("vsphere_host_sum",   "vsphere_host_top99p_sum", "vsphere_host_top99p")
+            + _hosts_from_hours("alibaba_host_sum",   "alibaba_host_top99p_sum")
+            + _hosts_from_hours("heroku_host_sum",    "heroku_host_top99p_sum")
+            + _hosts_from_hours("opentelemetry_host_sum", "opentelemetry_host_top99p_sum")
+        ) or _hosts_from_hours("infra_hours_sum",     "infra_host_top99p_sum",   "infra_host_top99p")
 
-        snap.apm_hosts    = _f(item, "apm_host_top99p_sum",   "apm_host_top99p")
-        snap.network_hosts = _f(item, "npm_host_top99p_sum",   "npm_host_top99p",
-                                "network_device_count_top99p_sum")
-        snap.dbm_hosts    = _f(item, "dbm_host_top99p_sum",   "dbm_host_top99p")
-        snap.containers   = _f(item, "container_count_avg_sum", "container_avg_sum",
-                               "container_count_avg")
+        snap.apm_hosts = _hosts_from_hours(
+            "apm_host_sum",
+            "apm_host_top99p_sum", "apm_host_top99p",
+        ) or _hosts_from_hours("apm_host_incl_usm_sum", "apm_host_incl_usm_top99p")
+
+        snap.network_hosts = _f(item, "npm_host_top99p", "npm_host_top99p_sum") or \
+            _hosts_from_hours("npm_host_sum", "network_device_count_top99p_sum")
+
+        snap.dbm_hosts = _f(item, "dbm_host_top99p", "dbm_host_top99p_sum",
+                            "dbm_host_database_instance_top99p")
+
+        # Containers: "_sum" = total container-hours for the month; ÷720 = concurrent count
+        raw_container_hours = _f(item, "container_sum", "container_count_avg_sum",
+                                 "container_avg_sum")
+        snap.container_hours = raw_container_hours   # used for the "Container Hours" tile
+        snap.containers = (
+            _f(item, "container_count_avg", "container_avg")   # already an average — use as-is
+            or (raw_container_hours / HOURS_PER_MONTH if raw_container_hours else 0.0)
+        )
 
         # Profiling / Fargate
-        snap.profiled_hosts      = _f(item, "profiling_host_count_top99p_sum",
-                                      "profiling_host_count_top99p")
-        snap.profiled_containers = _f(item, "profiling_container_agent_count_avg_sum",
-                                      "profiling_container_count_avg_sum")
-        snap.profiled_fargate    = _f(item, "avg_profiled_fargate_tasks_hw_max_sum",
-                                      "profiling_aas_count_top99p_sum")
-        snap.apm_fargate         = _f(item, "apm_fargate_count_avg_sum",
-                                      "apm_fargate_count_avg")
-        snap.fargate_tasks       = _f(item, "fargate_tasks_count_avg_sum",
-                                      "fargate_tasks_count_avg")
+        # profiling_host_top99p is already a concurrent count; profiling_container_agent_count_sum is hours
+        snap.profiled_hosts = _f(item,
+            "profiling_host_top99p",
+            "profiling_host_count_top99p_sum", "profiling_host_count_top99p",
+            "profiling_uncategorized_host_count_top99p",
+        )
+        _prof_cont_hours = _f(item, "profiling_container_agent_count_sum")
+        snap.profiled_containers = (
+            _f(item, "profiling_container_agent_count_avg", "profiling_container_count_avg_sum")
+            or (_prof_cont_hours / HOURS_PER_MONTH if _prof_cont_hours else 0.0)
+        )
+        snap.profiled_fargate = _f(item,
+            "avg_profiled_fargate_tasks",
+            "avg_profiled_fargate_tasks_hw_max_sum",
+            "profiling_aas_count_top99p_sum",
+            "fargate_container_profiler_profiling_fargate_avg",
+        )
+        snap.apm_fargate   = _f(item, "apm_fargate_count_avg_sum", "apm_fargate_count_avg")
+        snap.fargate_tasks = _f(item, "fargate_tasks_count_avg_sum",
+                                "fargate_tasks_count_avg", "fargate_tasks_count_hwm")
 
         # Custom Metrics
-        snap.custom_metrics          = _f(item, "custom_ts_avg_sum", "custom_timeseries_avg_sum",
-                                          "custom_ts_avg")
+        snap.custom_metrics          = _f(item, "custom_ts_avg", "custom_ts_avg_sum",
+                                          "custom_timeseries_avg_sum")
         snap.ingested_custom_metrics = _f(item, "custom_ingested_timeseries_average_sum",
                                           "ingested_custom_timeseries_average_sum",
-                                          "custom_live_ts_avg_sum")
+                                          "custom_live_ts_avg_sum", "custom_live_ts_avg")
 
-        # Logs
-        snap.ingested_logs_bytes     = _f(item, "ingested_events_bytes_agg_sum",
-                                          "billable_ingested_bytes_agg_sum",
-                                          "logs_live_ingested_bytes_agg_sum")
-        snap.indexed_logs_live       = _f(item, "logs_live_indexed_count_agg_sum",
-                                          "indexed_events_count_agg_sum")
-        snap.indexed_logs_rehydrated = _f(item, "logs_rehydrated_indexed_count_agg_sum")
-        snap.indexed_logs_3day       = _f(item, "logs_indexed_3day_agg_sum",  "logs_indexed_3_day_agg_sum")
-        snap.indexed_logs_7day       = _f(item, "logs_indexed_7day_agg_sum",  "logs_indexed_7_day_agg_sum")
-        snap.indexed_logs_15day      = _f(item, "logs_indexed_15day_agg_sum", "logs_indexed_15_day_agg_sum")
-        snap.indexed_logs_30day      = _f(item, "logs_indexed_30day_agg_sum", "logs_indexed_30_day_agg_sum")
-        snap.indexed_logs_45day      = _f(item, "logs_indexed_45day_agg_sum", "logs_indexed_45_day_agg_sum")
-        snap.indexed_logs_60day      = _f(item, "logs_indexed_60day_agg_sum", "logs_indexed_60_day_agg_sum")
-        snap.indexed_logs_90day      = _f(item, "logs_indexed_90day_agg_sum", "logs_indexed_90_day_agg_sum")
-        snap.indexed_logs_180day     = _f(item, "logs_indexed_180day_agg_sum","logs_indexed_180_day_agg_sum")
-        snap.indexed_logs_360day     = _f(item, "logs_indexed_360day_agg_sum","logs_indexed_360_day_agg_sum")
-        snap.security_logs_bytes     = _f(item, "siem_ingested_bytes_agg_sum",
-                                          "siem_analyzed_logs_add_on_count_agg_sum",
-                                          "twol_ingested_events_bytes_agg_sum")
+        # Logs — ingested bytes
+        # "live_ingested_bytes_sum" is the most common field in newer API responses
+        snap.ingested_logs_bytes = _f(item,
+            "live_ingested_bytes_sum",           # ← most common in 2025+ responses
+            "ingested_events_bytes_sum",
+            "ingested_events_bytes_agg_sum",
+            "billable_ingested_bytes_agg_sum",
+            "logs_live_ingested_bytes_agg_sum",
+        )
+
+        # Indexed logs — Datadog uses two naming conventions for retention tiers:
+        #   logs_indexed_logs_usage_sum_N_day  (newer, e.g. 2025+)
+        #   logs_indexed_Nday_agg_sum          (older)
+        snap.indexed_logs_live       = _f(item,
+            "logs_indexed_live_index_indexed_sum",
+            "logs_live_indexed_logs_usage_sum",
+            "logs_live_indexed_count_agg_sum",
+            "live_indexed_events_sum",
+        )
+        snap.indexed_logs_rehydrated = _f(item,
+            "logs_rehydrated_indexed_count_agg_sum",
+            "rehydrated_indexed_events_sum",
+        )
+        snap.indexed_logs_3day   = _f(item,
+            "logs_indexed_logs_usage_sum_3_day",   # newer naming
+            "logs_indexed_3day_agg_sum",
+            "logs_indexed_3_day_agg_sum",
+        )
+        snap.indexed_logs_7day   = _f(item,
+            "logs_indexed_logs_usage_sum_7_day",
+            "logs_indexed_7day_agg_sum",
+            "logs_indexed_7_day_agg_sum",
+        )
+        snap.indexed_logs_15day  = _f(item,
+            "logs_indexed_logs_usage_sum_15_day",
+            "logs_indexed_15day_agg_sum",
+            "logs_indexed_15_day_agg_sum",
+            "logs_indexed_logs_indexed_15day_sum",
+        )
+        snap.indexed_logs_30day  = _f(item,
+            "logs_indexed_logs_usage_sum_30_day",
+            "logs_indexed_30day_agg_sum",
+            "logs_indexed_30_day_agg_sum",
+            "logs_indexed_logs_indexed_30day_sum",
+        )
+        snap.indexed_logs_45day  = _f(item,
+            "logs_indexed_logs_usage_sum_45_day",
+            "logs_indexed_45day_agg_sum",
+            "logs_indexed_45_day_agg_sum",
+            "logs_indexed_logs_indexed_45day_sum",
+        )
+        snap.indexed_logs_60day  = _f(item,
+            "logs_indexed_logs_usage_sum_60_day",
+            "logs_indexed_60day_agg_sum",
+            "logs_indexed_60_day_agg_sum",
+        )
+        snap.indexed_logs_90day  = _f(item,
+            "logs_indexed_logs_usage_sum_90_day",
+            "logs_indexed_90day_agg_sum",
+            "logs_indexed_90_day_agg_sum",
+            "logs_indexed_logs_indexed_90day_sum",
+        )
+        snap.indexed_logs_180day = _f(item,
+            "logs_indexed_logs_usage_sum_180_day",
+            "logs_indexed_180day_agg_sum",
+            "logs_indexed_180_day_agg_sum",
+        )
+        snap.indexed_logs_360day = _f(item,
+            "logs_indexed_logs_usage_sum_360_day",
+            "logs_indexed_360day_agg_sum",
+            "logs_indexed_360_day_agg_sum",
+        )
+        # SIEM / security logs
+        snap.security_logs_bytes = _f(item,
+            "twol_ingested_events_bytes_sum",      # "2nd line" (SIEM) ingested bytes
+            "twol_ingested_events_bytes_agg_sum",
+            "siem_ingested_bytes_agg_sum",
+            "siem_analyzed_logs_add_on_count_sum",
+        )
 
         # APM / Tracing
-        snap.ingested_spans_bytes = _f(item, "ingested_spans_bytes_agg_sum")
-        snap.indexed_spans        = _f(item, "trace_search_indexed_events_count_agg_sum",
-                                       "apm_span_custom_agg_sum",
-                                       "indexed_events_count_agg_sum")
-        snap.custom_events        = _f(item, "custom_events_agg_sum")
+        snap.ingested_spans_bytes = _f(item,
+            "ingested_spans_bytes_agg_sum",
+            "ingested_spans_bytes_sum",
+            "apm_ingest_gb_sum",               # GB; multiply by 1e9 below if > 0
+        )
+        # apm_ingest_gb_sum is in GB, not bytes — convert if it looks like GB scale
+        _apm_gb_check = _f(item, "apm_ingest_gb_sum")
+        if _apm_gb_check > 0 and snap.ingested_spans_bytes == _apm_gb_check:
+            snap.ingested_spans_bytes = _apm_gb_check * 1e9
+
+        snap.indexed_spans = _f(item,
+            "trace_search_indexed_events_count_sum",   # newer naming
+            "trace_search_indexed_events_count_agg_sum",
+            "apm_span_custom_agg_sum",
+            "indexed_events_count_sum",
+        )
+        snap.custom_events = _f(item,
+            "custom_events_agg_sum", "custom_events_sum",
+        )
 
         # Serverless
-        snap.serverless_functions     = _f(item, "serverless_func_count_avg_sum",
-                                           "serverless_func_avg_sum",
-                                           "serverless_func_count_agg_sum")
-        snap.serverless_invocations   = _f(item, "lambda_invocations_count_agg_sum",
-                                           "serverless_invocation_count_agg_sum",
-                                           "aws_lambda_invocations_sum")
-        snap.serverless_app_instances = _f(item, "serverless_apps_total_count_hw_max_sum",
-                                           "serverless_apps_azure_count_hw_max_sum")
+        snap.serverless_functions     = _f(item,
+            "serverless_func_count_avg_sum", "serverless_func_avg_sum",
+            "serverless_func_count_agg_sum",
+        )
+        snap.serverless_invocations   = _f(item,
+            "lambda_invocations_count_agg_sum",
+            "serverless_invocation_count_agg_sum",
+            "aws_lambda_invocations_sum",
+        )
+        snap.serverless_app_instances = _f(item,
+            "serverless_apps_total_count_hw_max_sum",
+            "serverless_apps_azure_count_hw_max_sum",
+        )
 
         # RUM
-        snap.rum_sessions      = _f(item, "rum_total_session_count_agg_sum",
-                                    "rum_browser_and_mobile_session_count_agg_sum",
-                                    "rum_session_count_agg_sum")
-        snap.rum_lite_sessions = _f(item, "rum_lite_session_count_agg_sum",
-                                    "rum_browser_lite_session_count_agg_sum")
-        snap.rum_replay        = _f(item, "rum_replay_session_count_agg_sum",
-                                    "session_replay_count_agg_sum",
-                                    "rum_browser_replay_count_agg_sum")
-        snap.rum_errors        = _f(item, "error_tracking_events_agg_sum",
-                                    "total_error_tracking_events_agg_sum")
-        snap.session_replay    = snap.rum_replay  # alias
+        # Total RUM Investigate = all session types summed
+        rum_total = _f(item,
+            "rum_total_session_count_sum",
+            "rum_browser_and_mobile_session_count_sum",
+            "rum_session_count_sum",
+        )
+        rum_lite   = _f(item,
+            "rum_lite_session_count_sum",
+            "rum_browser_lite_session_count_sum",
+            "rum_lite_session_count_agg_sum",
+            "rum_browser_lite_session_count_agg_sum",
+        )
+        rum_replay = _f(item,
+            "rum_replay_session_count_sum",
+            "rum_browser_replay_session_count_sum",
+            "rum_replay_session_count_agg_sum",
+            "session_replay_count_agg_sum",
+        )
+        rum_legacy = _f(item,
+            "rum_browser_legacy_session_count_sum",
+            "browser_legacy_session_count_sum",
+        )
+        # If the total session count field is missing, sum the parts
+        snap.rum_sessions      = rum_total or (rum_lite + rum_replay + rum_legacy)
+        snap.rum_lite_sessions = rum_lite
+        snap.rum_replay        = rum_replay
+        snap.session_replay    = rum_replay  # alias
+        snap.rum_errors        = _f(item,
+            "error_tracking_error_events_sum",   # newer naming
+            "error_tracking_events_sum",
+            "error_tracking_events_agg_sum",
+            "total_error_tracking_events_agg_sum",
+        )
 
         # Synthetics
-        snap.synthetics_api     = _f(item, "synthetics_check_calls_count_agg_sum")
-        snap.synthetics_browser = _f(item, "synthetics_browser_check_calls_count_agg_sum",
-                                     "browser_check_calls_count_agg_sum")
+        snap.synthetics_api     = _f(item,
+            "synthetics_check_calls_count_agg_sum",
+            "synthetics_check_calls_count_sum",
+        )
+        snap.synthetics_browser = _f(item,
+            "synthetics_browser_check_calls_count_sum",   # newer naming
+            "synthetics_browser_check_calls_count_agg_sum",
+            "browser_check_calls_count_agg_sum",
+        )
 
         # Incident / DBM / CI / Other
-        snap.incident_management_seats    = _f(item, "incident_management_monthly_active_users_hw_max_sum",
-                                               "incident_management_monthly_active_users_hw_max")
-        snap.test_optimization_committers = _f(item, "ci_visibility_itsm_committers_hw_max_sum",
-                                               "ci_visibility_committers_hw_max_sum",
-                                               "ci_pipeline_indexed_spans_agg_sum")
-        snap.test_optimization_spans      = _f(item, "ci_test_indexed_spans_agg_sum",
-                                               "ci_visibility_test_indexed_spans_agg_sum",
-                                               "ci_visibility_pipeline_committers_hw_max_sum")
-        snap.product_analytics_sessions   = _f(item, "product_analytics_count_agg_sum",
-                                               "product_analytics_session_count_agg_sum")
-        snap.app_builder_apps             = _f(item, "published_app_hwm_sum", "published_app_hw_max_sum")
-        snap.bits_ai_investigations       = _f(item, "bits_ai_total_conversations_agg_sum",
-                                               "bits_ai_investigations_agg_sum")
+        snap.incident_management_seats    = _f(item,
+            "incident_management_seats_hwm",
+            "incident_management_monthly_active_users_hwm",
+            "incident_management_monthly_active_users_hw_max_sum",
+            "incident_management_monthly_active_users_hw_max",
+        )
+        snap.test_optimization_committers = _f(item,
+            "ci_visibility_pipeline_committers_hwm",   # newer naming
+            "ci_visibility_itsm_committers_hw_max_sum",
+            "ci_visibility_committers_hw_max_sum",
+        )
+        snap.test_optimization_spans      = _f(item,
+            "ci_pipeline_indexed_spans_sum",            # newer naming
+            "ci_test_indexed_spans_agg_sum",
+            "ci_test_indexed_spans_sum",
+            "ci_visibility_test_indexed_spans_agg_sum",
+        )
+        snap.product_analytics_sessions   = _f(item,
+            "product_analytics_sum",
+            "product_analytics_count_agg_sum",
+            "product_analytics_session_count_agg_sum",
+        )
+        snap.app_builder_apps    = _f(item, "published_app_hwm_sum", "published_app_hw_max_sum")
+        snap.bits_ai_investigations = _f(item,
+            "bits_ai_investigations_sum",
+            "bits_ai_total_conversations_agg_sum",
+            "bits_ai_investigations_agg_sum",
+            "ai_credits_bits_sre_ai_credits_sum",
+        )
 
     # ── Billable summary overlay ─────────────────────────────────────────────
     if billable_raw:
@@ -692,8 +860,8 @@ def generate_csv(snap: UsageSnapshot, cx: CoralogixSizing) -> bytes:
     w.writerow(["Metric", "Value", "Unit"])
 
     tiles = [
-        ("Infra Hosts",                    snap.infra_hosts,          "hosts"),
-        ("APM Hosts",                      snap.apm_hosts,            "hosts"),
+        ("Infra Hosts",                    snap.infra_hosts,          "hosts (avg concurrent)"),
+        ("APM Hosts",                      snap.apm_hosts,            "hosts (avg concurrent)"),
         ("Custom Metrics",                 snap.custom_metrics,       "time series"),
         ("Ingested Custom Metrics",        snap.ingested_custom_metrics, "time series"),
         ("Indexed Logs (3 Day)",           snap.indexed_logs_3day,    "events"),
@@ -708,7 +876,8 @@ def generate_csv(snap: UsageSnapshot, cx: CoralogixSizing) -> bytes:
         ("Indexed Logs (Live Search)",     snap.indexed_logs_live,    "events"),
         ("Indexed Logs (Rehydrated)",      snap.indexed_logs_rehydrated, "events"),
         ("Ingested Logs",                  snap.ingested_logs_bytes,  "bytes"),
-        ("Container Hours",                snap.containers,           "container-hours"),
+        ("Container Hours",                snap.container_hours,      "container-hours/month"),
+        ("Containers (avg concurrent)",    snap.containers,           "containers"),
         ("Ingested Spans",                 snap.ingested_spans_bytes, "bytes"),
         ("Indexed Spans",                  snap.indexed_spans,        "events"),
         ("Profiled Hosts",                 snap.profiled_hosts,       "hosts"),
@@ -865,9 +1034,10 @@ def generate_xlsx(snap: UsageSnapshot, cx: CoralogixSizing) -> bytes | None:
 
     tiles = [
         ("Infrastructure",           None,                          None,     ""),
-        ("Infra Hosts",               snap.infra_hosts,              _fmt(snap.infra_hosts, 0), "hosts"),
-        ("APM Hosts",                snap.apm_hosts,                _fmt(snap.apm_hosts, 0),   "hosts"),
-        ("Container Hours",          snap.containers,               _fmt(snap.containers),     "container-hours"),
+        ("Infra Hosts",               snap.infra_hosts,              _fmt(snap.infra_hosts, 0), "hosts (avg concurrent)"),
+        ("APM Hosts",                snap.apm_hosts,                _fmt(snap.apm_hosts, 0),   "hosts (avg concurrent)"),
+        ("Container Hours",          snap.container_hours,          _fmt(snap.container_hours), "container-hours/month"),
+        ("Containers (avg concurrent)", snap.containers,            _fmt(snap.containers, 0),  "containers"),
         ("Network Hosts",            snap.network_hosts,            _fmt(snap.network_hosts, 0), "hosts"),
         ("DBM Hosts",                snap.dbm_hosts,                _fmt(snap.dbm_hosts, 0),   "hosts"),
         ("",                         None,                          None,     ""),
@@ -1002,10 +1172,10 @@ def generate_xlsx(snap: UsageSnapshot, cx: CoralogixSizing) -> bytes | None:
     ws2.merge_cells("A12:D12")
 
     dd_inputs = [
-        ("Infra Hosts",                         snap.infra_hosts,            "hosts"),
-        ("APM Hosts",                           snap.apm_hosts,              "hosts"),
-        ("Profiled Hosts",                      snap.profiled_hosts,         "hosts"),
-        ("Containers",                          snap.containers,             "container-hours"),
+        ("Infra Hosts",                         snap.infra_hosts,            "hosts (avg concurrent)"),
+        ("APM Hosts",                           snap.apm_hosts,              "hosts (avg concurrent)"),
+        ("Profiled Hosts",                      snap.profiled_hosts,         "hosts (avg concurrent)"),
+        ("Containers",                          snap.containers,             "containers (avg concurrent)"),
         ("Custom Metrics",                      snap.custom_metrics,         "time series"),
         ("Ingested Logs",                       snap.ingested_logs_bytes/1e9,"GB/month"),
         ("Security Logs",                       snap.security_logs_bytes/1e9,"GB/month"),
@@ -1170,13 +1340,14 @@ def generate_html(snap: UsageSnapshot, cx: CoralogixSizing) -> bytes:
 
     # ── Bill Overview tiles ───────────────────────────────────────────────
     infra_tiles = "".join([
-        tile("Infra Hosts",              _fmt(snap.infra_hosts, 0)),
-        tile("APM Hosts",                _fmt(snap.apm_hosts, 0)),
-        tile("Container Hours",          _fmt(snap.containers)),
+        tile("Infra Hosts",              _fmt(snap.infra_hosts, 0),    "avg concurrent"),
+        tile("APM Hosts",                _fmt(snap.apm_hosts, 0),      "avg concurrent"),
+        tile("Container Hours",          _fmt(snap.container_hours),   "host-hours/month"),
+        tile("Containers (avg)",         _fmt(snap.containers, 0),     "avg concurrent"),
         tile("Network Hosts",            _fmt(snap.network_hosts, 0)),
         tile("DBM Hosts",                _fmt(snap.dbm_hosts, 0)),
         tile("Profiled Hosts",           _fmt(snap.profiled_hosts, 0)),
-        tile("Profiled Container Hours", _fmt(snap.profiled_containers)),
+        tile("Profiled Containers (avg)",_fmt(snap.profiled_containers, 0), "avg concurrent"),
         tile("Fargate Tasks",            _fmt(snap.fargate_tasks, 0)),
         tile("APM Fargate Tasks",        _fmt(snap.apm_fargate, 0)),
     ])
