@@ -1,54 +1,69 @@
 # Datadog → Coralogix Usage Report
 
-A self-contained Python script that pulls your Datadog usage from the official
-Usage Metering API, mirrors every tile on the Bill Overview page, converts the
-numbers to Coralogix sizing estimates, and packages everything into a ZIP file.
+Pulls Datadog usage from the official Usage Metering API, converts it into
+Coralogix TCO sizing inputs (and Checkly inputs for Synthetics), and packages
+everything into a ZIP for handoff.
+
+The script always pulls a **3-month window**: the target month plus the two
+months before it. That powers month-over-month trend analysis in the HTML and
+Excel outputs.
 
 ---
 
-## What you get
+## What it produces
 
-Running the script produces a single ZIP file containing:
+One ZIP named like:
+
+```text
+datadog_coralogix_report_2026-01_to_2026-03.zip
+```
 
 | File | Contents |
 |---|---|
-| `datadog_raw_YYYY-MM.json` | Full raw API responses (for reference / audit) |
-| `datadog_usage_YYYY-MM.csv` | All Bill Overview metrics in a flat CSV |
-| `coralogix_sizing_YYYY-MM.xlsx` | Excel workbook: Bill Overview + Coralogix sizing + billable breakdown |
-| `report_YYYY-MM.html` | Self-contained HTML report — open in any browser |
+| `datadog_raw_<range>.json` | Combined raw usage responses for all months in the window |
+| `datadog_usage_YYYY-MM.csv` | One CSV per month (Bill Overview + sizing + TCO/Checkly summaries) |
+| `coralogix_sizing_<range>.xlsx` | Excel workbook: Bill Overview, Coralogix sizing, billable breakdown, Trend Analysis sheet |
+| `report_<range>.html` | Self-contained HTML report (open in any browser) |
 
-Send the ZIP back to your Coralogix contact. The HTML report shows the
-four numbers to enter into the Coralogix TCO Calculator:
+### HTML report — what to enter where
 
-- **Logs** — GB / day
-- **Metrics** — NumSeries (TimeSeries)
-- **Tracing** — GB / day
-- **RUM** — sessions / month
+**Coralogix TCO sheet** (latest month in the window):
+
+| Input | Unit | Notes |
+|---|---|---|
+| Logs | GB / day | Split **70% Monitoring / 30% Compliance** |
+| Metrics | NumSeries | Hosts + containers + custom metrics (+ serverless TS) |
+| Tracing | GB / day | Split **10% Monitoring / 90% Compliance** |
+| RUM Sessions | sessions / day | Total sessions ÷ 30 |
+| RUM Recording | recordings / day | Session replay ÷ 30 |
+
+**Checkly** (from Datadog Synthetics):
+
+| Input | Unit |
+|---|---|
+| API checks | test runs / day |
+| Browser checks | test runs / day |
+
+The report also includes:
+
+- Growth trend table across the 3-month window (values + MoM %)
+- Datadog source tiles (infra, logs, tracing, RUM, synthetics)
+- Sizing detail tables and the conversion assumptions used
 
 ---
 
 ## Requirements
 
-- Python 3.9 or later
-- A Datadog **API key** with `usage_read` permission
-- A Datadog **Application key** with `usage_read` and (optionally) `billing_read` permission
-
-> Cost data (estimated / historical / projected) requires `billing_read` on a
-> parent-organization key. If that permission is missing the script still runs
-> and skips only the cost section.
+- Python 3.9+
+- Datadog **API key** with `usage_read`
+- Datadog **Application key** with `usage_read`
+- Optional: `billing_read` on the App key for billable-summary enrichment
 
 ---
 
 ## Quick start
 
-### 1. Install dependencies
-
-```bash
-pip install -r requirements.txt
-```
-
-If you are in a managed Python environment (e.g. macOS system Python or a
-Homebrew installation), use a virtual environment:
+### 1. Install
 
 ```bash
 python3 -m venv .venv
@@ -58,19 +73,15 @@ pip install -r requirements.txt
 
 ### 2. Configure
 
-Copy the example config and fill in your Datadog credentials:
-
 ```bash
 cp .env.example .env
 ```
 
-Open `.env` in any text editor and set:
-
-```
+```env
 DD_API_KEY=<your API key>
 DD_APP_KEY=<your Application key>
 DD_SITE=datadoghq.com        # or datadoghq.eu, us3.datadoghq.com, etc.
-DD_MONTH=2026-06             # optional — defaults to previous month
+DD_MONTH=2026-03             # target month; script also pulls the 2 months before
 ```
 
 ### 3. Run
@@ -79,146 +90,138 @@ DD_MONTH=2026-06             # optional — defaults to previous month
 python dd_usage_pull.py
 ```
 
-The script prints a live progress log and, when finished, shows a summary:
+Example output:
 
-```
+```text
   Datadog → Coralogix Usage Report
-  Site  : datadoghq.com
-  Month : 2026-06
-  Output: /path/to/current/directory
+  Site    : datadoghq.com
+  Range   : 2026-01 → 2026-03  (3 months)
 
-  [1/5] Fetching usage summary …        OK
-  [2/5] Fetching billable usage summary … OK
-  [3/5] Fetching estimated cost …       OK
-  [4/5] Fetching historical cost …      OK
-  [5/5] Fetching projected cost …       OK
+  [1/2] Fetching usage summary (2026-01 → 2026-03) …
+  [2/2] Fetching billable usage summary (2026-03) …
 
-  ══════════════════════════════════════════
-  Coralogix TCO Sizing Summary — 2026-06
-  ══════════════════════════════════════════
-  Logs     : 166.67 GB/day
-  Metrics  : 4,115,870 NumSeries
-  Tracing  : 80.00 GB/day
-  RUM      : 200,000 sessions/month
-  Est. Cost: $42,500.00 USD (MTD)
-  ══════════════════════════════════════════
+  Coralogix TCO Sizing — Latest Month: 2026-03
+  Logs     : 11092.61 GB/day
+  Metrics  : 36,307,824 NumSeries
+  Tracing  : 625.90 GB/day
+  RUM      : 61,229 sessions/day  |  61,020 recordings/day
+  Checkly  : 457,743 API/day  |  8,709 browser/day
 
-  Output ZIP : /path/to/datadog_coralogix_report_2026-06.zip
+  Output ZIP : ./datadog_coralogix_report_2026-01_to_2026-03.zip
 ```
+
+Send the ZIP to your Coralogix contact.
 
 ---
 
 ## CLI options
 
-You can also pass arguments directly instead of using a `.env` file:
-
 ```bash
-python dd_usage_pull.py --month 2026-05 --site datadoghq.eu --out /tmp/reports
+python dd_usage_pull.py --month 2026-03 --site datadoghq.eu --out /tmp/reports
 ```
 
 | Option | Default | Description |
 |---|---|---|
-| `--month` | previous month | Target month in `YYYY-MM` format |
+| `--month` | previous calendar month | Target month (`YYYY-MM`). Also pulls the 2 months before it |
 | `--site` | `datadoghq.com` | Datadog site |
-| `--out` | `.` (current directory) | Output directory for the ZIP |
+| `--out` | `.` | Output directory for the ZIP |
 
-Environment variables (`DD_API_KEY`, `DD_APP_KEY`, `DD_SITE`, `DD_MONTH`) take
-precedence over `.env` file values; CLI flags take precedence over environment
-variables.
+Precedence: CLI flags → environment variables → `.env` file.
 
 ---
 
 ## Datadog API endpoints used
 
-All calls go to the official [Usage Metering API](https://docs.datadoghq.com/api/latest/usage-metering/).
-No UI scraping. No browser automation.
+Official [Usage Metering API](https://docs.datadoghq.com/api/latest/usage-metering/) only — no UI scraping.
 
 | Endpoint | Purpose |
 |---|---|
-| `GET /api/v1/usage/summary` | All product usage totals for the month |
-| `GET /api/v1/usage/billable-summary` | Committed vs on-demand split per dimension |
-| `GET /api/v2/usage/estimated_cost` | Month-to-date estimated cost |
-| `GET /api/v2/usage/historical_cost` | Closed-month historical cost |
-| `GET /api/v2/usage/projected_cost` | End-of-month cost forecast |
+| `GET /api/v1/usage/summary` | Product usage for the full 3-month window |
+| `GET /api/v1/usage/billable-summary` | Optional billable overlay for the target month |
 
-> **Data freshness:** Datadog usage data may lag up to 72 hours.
-> Historical cost for a closed month is available by the 16th of the following month.
+> Datadog usage data can lag up to ~72 hours.
+
+### Important field notes
+
+- Host / container `_sum` fields are often **host-hours** for the month. The script converts them to average concurrent counts with ÷ 720.
+- Ingested spans often come from `twol_ingested_events_bytes_sum` (Tracing Without Limits). `apm_ingest_gb_sum` is frequently null when usage is within Datadog’s included APM ingest allocation.
+- Indexed spans come from `trace_search_indexed_events_count_sum`.
 
 ---
 
-## Coralogix sizing formulas
+## Conversion assumptions
 
-The conversion uses the same formulas as the Datadog → Coralogix sizing
-Excel template. All assumptions are visible at the top of `dd_usage_pull.py`
-and can be changed there if needed.
+Defaults live at the top of `dd_usage_pull.py` and can be changed there.
 
-| Parameter | Default | Effect |
+| Parameter | Default | Meaning |
 |---|---|---|
-| `AVG_LOG_SIZE_KB` | 2.5 KB | Average compressed log line size |
-| `AVG_SPAN_SIZE_KB` | 1.5 KB | Average span payload size |
-| `TS_PER_HOST` | 750 | Time series generated per host or container |
-| `TS_TO_UNITS` | 3.3 × 10⁻⁵ | Coralogix metrics Units/day per TimeSeries |
-| `DAYS_PER_MONTH` | 30 | Used for monthly → daily conversions |
-| Log tier split | 50 / 40 / 10 % | Frequent Search / Monitoring / Compliance |
+| `AVG_LOG_SIZE_KB` | 2.5 | Assumed avg log line size |
+| `AVG_SPAN_SIZE_KB` | 1.5 | Assumed avg span size |
+| `TS_PER_HOST` | 750 | Time series per host/container |
+| `TS_TO_UNITS` | 3.3e-5 | NumSeries → Coralogix units/day |
+| `DAYS_PER_MONTH` | 30 | Monthly → daily |
+| `HOURS_PER_MONTH` | 720 | Host-hours → concurrent hosts |
+| Log tier split | 70% / 30% | Monitoring / Compliance |
+| Span tier split | 10% / 90% | Monitoring / Compliance |
 
 ### Logs
 
-```
-total_ingested_gb   = ingested_logs_gb + security_logs_gb
-total_indexed_count = (live_3d + live_7d + live + rehydrated + 15d + 30d+ retention)
-indexed_size_gb     = total_indexed_count × avg_log_size_kb × 1024 ÷ 1024³
-daily_gb            = total_ingested_gb ÷ 30
+```text
+daily_logs_gb = (ingested_logs_bytes + security_logs_bytes) / 1e9 / 30
+monitoring    = daily_logs_gb × 0.70
+compliance    = daily_logs_gb × 0.30
 ```
 
 ### Metrics
 
-```
-total_ts = (infra_hosts + apm_hosts + profiled_hosts + fargate_types + containers) × 750
+```text
+total_ts = (hosts + containers) × 750
          + custom_metrics
-         + (daily_serverless_functions × 0.30)
-         + (daily_serverless_invocations × 0.30)
-units_per_day = total_ts × 3.3e-5
+         + serverless_functions_daily × 0.30
+         + serverless_invocations_daily × 0.30
 ```
 
 ### Tracing
 
-```
-ingested_spans_gb  = ingested_spans_bytes ÷ 1e9
-indexed_spans_gb   = (indexed_spans + custom_events) × avg_span_size_kb ÷ 1024²
-daily_ingest_gb    = ingested_spans_gb ÷ 30
+```text
+daily_spans_gb = twol_ingested_events_bytes / 1e9 / 30
+monitoring     = daily_spans_gb × 0.10
+compliance     = daily_spans_gb × 0.90
 ```
 
 ### RUM
 
+```text
+sessions_day   = rum_total_sessions / 30
+recordings_day = session_replay / 30
 ```
-rum_sessions_monthly = rum_total_session_count
+
+### Synthetics → Checkly
+
+```text
+api_checks_day     = synthetics_api_test_runs / 30
+browser_checks_day = synthetics_browser_test_runs / 30
 ```
 
 ---
 
 ## Troubleshooting
 
-| Error | Cause | Fix |
+| Error / symptom | Likely cause | Fix |
 |---|---|---|
-| `DD_API_KEY is not set` | Missing credential | Add key to `.env` |
-| `403 Forbidden` | Missing permission | Ensure `usage_read` on API key; `billing_read` on App key |
-| `400 Bad Request` | Invalid month format | Use `YYYY-MM` format, e.g. `2026-06` |
-| All metrics show 0 | Empty API response | Check that the account has usage in the target month |
-| Cost section missing | `billing_read` not on App key | Normal — usage data still exported |
-
-If a metric shows 0 and you expect a value, check `datadog_raw_YYYY-MM.json`
-inside the ZIP — it contains the complete raw API responses for inspection.
+| `DD_API_KEY is not set` | Missing credential | Add keys to `.env` |
+| `403 Forbidden` | Missing `usage_read` | Fix App/API key scopes |
+| `400 Bad Request` | Bad month format | Use `YYYY-MM` |
+| Metric shows 0 unexpectedly | Field name / free-tier null | Inspect `datadog_raw_*.json` in the ZIP |
+| Billable summary skipped | No `billing_read` | Optional — usage sizing still works |
+| Month missing from window | No usage returned for that month | Check account activity / permissions |
 
 ---
 
 ## Permissions checklist
 
-Create a dedicated Datadog Application key with:
+- [x] API key: `usage_read`
+- [x] App key: `usage_read`
+- [ ] App key: `billing_read` (optional, for billable-summary)
 
-- [x] `usage_read` — required for all usage data
-- [x] `billing_read` — required for cost data (estimated, historical, projected)
-
-The API key only needs `usage_read`.
-
-For multi-org accounts, the key must belong to the **parent organization** to
-see cross-org billable and cost data.
+For multi-org accounts, use a **parent organization** key if you need org-wide totals.
