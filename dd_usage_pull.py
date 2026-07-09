@@ -241,10 +241,6 @@ class UsageSnapshot:
     app_builder_apps:              float = 0
     bits_ai_investigations:        float = 0
 
-    # ── Cost (USD) ──────────────────────────────────────────────────────────
-    estimated_cost_usd:  float | None = None
-    historical_cost_usd: float | None = None
-    projected_cost_usd:  float | None = None
 
     # ── Full API responses for raw JSON export ───────────────────────────────
     raw: dict = field(default_factory=dict)
@@ -308,9 +304,6 @@ def _f(item: dict, *keys: str) -> float:
 def extract_usage_snapshot(
     summary_raw: dict,
     billable_raw: dict | None,
-    estimated_cost_raw: dict | None,
-    historical_cost_raw: dict | None,
-    projected_cost_raw: dict | None,
     month: str,
     site: str,
 ) -> UsageSnapshot:
@@ -689,37 +682,10 @@ def extract_usage_snapshot(
         if _90d: snap.indexed_logs_90day = _90d
 
     # ── Cost data ────────────────────────────────────────────────────────────
-    if estimated_cost_raw:
-        for item in estimated_cost_raw.get("data", []):
-            attrs = item.get("attributes", {})
-            total = attrs.get("total_cost") or attrs.get("estimated_total_cost")
-            if total is not None:
-                snap.estimated_cost_usd = float(total)
-                break
-
-    if historical_cost_raw:
-        for item in historical_cost_raw.get("data", []):
-            attrs = item.get("attributes", {})
-            total = attrs.get("total_cost")
-            if total is not None:
-                snap.historical_cost_usd = float(total)
-                break
-
-    if projected_cost_raw:
-        for item in projected_cost_raw.get("data", []):
-            attrs = item.get("attributes", {})
-            total = attrs.get("projected_total_cost") or attrs.get("total_cost")
-            if total is not None:
-                snap.projected_cost_usd = float(total)
-                break
-
     # ── Store raw for JSON export ────────────────────────────────────────────
     snap.raw = {
-        "usage_summary":   summary_raw,
+        "usage_summary":    summary_raw,
         "billable_summary": billable_raw or {},
-        "estimated_cost":  estimated_cost_raw or {},
-        "historical_cost": historical_cost_raw or {},
-        "projected_cost":  projected_cost_raw or {},
     }
 
     return snap
@@ -910,13 +876,6 @@ def generate_csv(snap: UsageSnapshot, cx: CoralogixSizing) -> bytes:
 
     w.writerow([])
 
-    # ── Cost ─────────────────────────────────────────────────────────────
-    w.writerow(["=== DATADOG COST (USD) ==="])
-    w.writerow(["Estimated MTD",   snap.estimated_cost_usd  or "N/A"])
-    w.writerow(["Historical",      snap.historical_cost_usd or "N/A"])
-    w.writerow(["Projected EOM",   snap.projected_cost_usd  or "N/A"])
-    w.writerow([])
-
     # ── Coralogix sizing ─────────────────────────────────────────────────
     w.writerow(["=== CORALOGIX SIZING ==="])
     w.writerow(["Assumption: avg log size (KB)",   AVG_LOG_SIZE_KB])
@@ -1091,15 +1050,10 @@ def generate_xlsx(snap: UsageSnapshot, cx: CoralogixSizing) -> bytes | None:
         ("Product Analytics Sessions",   snap.product_analytics_sessions,  _fmt(snap.product_analytics_sessions), "sessions/month"),
         ("App Builder Published Apps",   snap.app_builder_apps,            _fmt(snap.app_builder_apps, 0), "apps"),
         ("Bits AI SRE Investigations",   snap.bits_ai_investigations,      _fmt(snap.bits_ai_investigations, 0), "investigations/month"),
-        ("",                         None,                          None,     ""),
-        ("Cost (USD)",               None,                          None,     ""),
-        ("Estimated MTD Cost",       snap.estimated_cost_usd,       _usd(snap.estimated_cost_usd), "USD"),
-        ("Historical Cost",          snap.historical_cost_usd,      _usd(snap.historical_cost_usd), "USD"),
-        ("Projected EOM Cost",       snap.projected_cost_usd,       _usd(snap.projected_cost_usd), "USD"),
     ]
 
     section_headers = {"Infrastructure", "Custom Metrics", "Logs", "APM / Tracing",
-                       "Serverless", "RUM", "Synthetics", "Other", "Cost (USD)"}
+                       "Serverless", "RUM", "Synthetics", "Other"}
 
     for i, (name, raw, formatted, unit) in enumerate(tiles, start=6):
         row = i
@@ -1683,11 +1637,7 @@ def main() -> None:
     # ── Fetch all data ────────────────────────────────────────────────────
     summary_raw        = None
     billable_raw       = None
-    estimated_cost_raw = None
-    historical_cost_raw= None
-    projected_cost_raw = None
-
-    print("  [1/5] Fetching usage summary …")
+    print("  [1/2] Fetching usage summary …")
     try:
         summary_raw = client.usage_summary(month, month)
         print("        OK")
@@ -1695,7 +1645,7 @@ def main() -> None:
         print(f"        WARN: {exc}")
         summary_raw = {}
 
-    print("  [2/5] Fetching billable usage summary …")
+    print("  [2/2] Fetching billable usage summary …")
     try:
         billable_raw = client.billable_summary(month)
         print("        OK")
@@ -1704,41 +1654,11 @@ def main() -> None:
     except Exception as exc:
         print(f"        WARN: {exc}")
 
-    print("  [3/5] Fetching estimated cost …")
-    try:
-        estimated_cost_raw = client.estimated_cost(month, month)
-        print("        OK")
-    except PermissionError as exc:
-        print(f"        SKIP: {exc}")
-    except Exception as exc:
-        print(f"        WARN: {exc}")
-
-    print("  [4/5] Fetching historical cost …")
-    try:
-        historical_cost_raw = client.historical_cost(month, month)
-        print("        OK")
-    except PermissionError as exc:
-        print(f"        SKIP: {exc}")
-    except Exception as exc:
-        print(f"        WARN: {exc}")
-
-    print("  [5/5] Fetching projected cost …")
-    try:
-        projected_cost_raw = client.projected_cost()
-        print("        OK")
-    except PermissionError as exc:
-        print(f"        SKIP: {exc}")
-    except Exception as exc:
-        print(f"        WARN: {exc}")
-
     # ── Process ───────────────────────────────────────────────────────────
     print("\n  Processing …")
     snap = extract_usage_snapshot(
-        summary_raw        or {},
+        summary_raw or {},
         billable_raw,
-        estimated_cost_raw,
-        historical_cost_raw,
-        projected_cost_raw,
         month,
         site,
     )
@@ -1761,8 +1681,6 @@ def main() -> None:
     print(f"  Metrics  : {cx.total_ts:,.0f} NumSeries")
     print(f"  Tracing  : {cx.daily_spans_ingest_gb:.2f} GB/day")
     print(f"  RUM      : {cx.rum_sessions_monthly:,.0f} sessions/month")
-    if snap.estimated_cost_usd is not None:
-        print(f"  Est. Cost: {_usd(snap.estimated_cost_usd)} USD (MTD)")
     print(f"  ══════════════════════════════════════════")
     print(f"\n  Output ZIP : {zip_path}")
     print(f"  Contents   :")
