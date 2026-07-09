@@ -1491,32 +1491,12 @@ def generate_html(
                 f'<span class="u">{unit}</span>{badge}</td>{cells}</tr>'
             )
         month_ths = "".join(f"<th>{t['month']}</th>" for t in trends)
-        insight_bits = []
-        for label, _, _, pk, _ in trend_metrics:
-            if not pk:
-                continue
-            txt, col = _classify(pk)
-            if "growth" in txt.lower() or txt == "Growing":
-                insight_bits.append(
-                    f'<li><b style="color:{col}">{label}</b> is {txt.lower()} across the window — '
-                    f'worth reviewing retention / sampling before sizing.</li>'
-                )
-            elif "decline" in txt.lower() or txt == "Declining":
-                insight_bits.append(
-                    f'<li><b style="color:{col}">{label}</b> is {txt.lower()} — possible optimisation already in place.</li>'
-                )
-        insights = (
-            "<ul class='insights'>" + "".join(insight_bits) + "</ul>"
-            if insight_bits else
-            "<p class='insights-empty'>No strong growth or decline pattern across the window.</p>"
-        )
         trend_html = f"""
 <section class="panel">
   <div class="panel-h">
     <h2>Growth trend</h2>
     <span class="panel-sub">{trends[0]['month']} → {trends[-1]['month']}</span>
   </div>
-  {insights}
   <table class="trend">
     <thead><tr><th>Metric</th>{month_ths}</tr></thead>
     <tbody>{rows}</tbody>
@@ -1590,10 +1570,6 @@ a{{color:{CX_GREEN_D}}}
 .panel-h{{display:flex;align-items:baseline;gap:10px;margin-bottom:12px}}
 .panel-h h2{{font-size:15px;font-weight:800;color:{CX_INK}}}
 .panel-sub{{font-size:12px;color:{CX_MUTED}}}
-
-.insights{{margin:0 0 14px 18px;color:{CX_MUTED};font-size:13px}}
-.insights li{{margin-bottom:4px}}
-.insights-empty{{font-size:13px;color:{CX_MUTED};margin-bottom:12px}}
 
 table{{width:100%;border-collapse:collapse}}
 th{{text-align:left;font-size:11px;font-weight:700;color:{CX_MUTED};text-transform:uppercase;letter-spacing:.04em;padding:8px 10px;border-bottom:1px solid {CX_LINE}}}
