@@ -817,6 +817,51 @@ def _usd(n: float | None) -> str:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# SECTION 6b — Multi-month trend analysis
+# ═══════════════════════════════════════════════════════════════════════════
+
+def compute_trends(
+    pairs: list[tuple["UsageSnapshot", "CoralogixSizing"]],
+) -> list[dict]:
+    """Compute month-over-month % changes for the key TCO metrics."""
+    results: list[dict] = []
+    for i, (snap, cx) in enumerate(pairs):
+        entry: dict = {
+            "month":           snap.month,
+            "logs_gb_day":     cx.daily_logs_gb,
+            "metrics_ts":      cx.total_ts,
+            "tracing_gb_day":  cx.daily_spans_ingest_gb,
+            "rum_day":         cx.rum_sessions_daily,
+            "rum_rec_day":     cx.rum_session_recording_daily,
+        }
+        if i > 0:
+            prev = results[i - 1]
+            def _pct(curr: float, prev_val: float) -> float | None:
+                if prev_val:
+                    return (curr - prev_val) / abs(prev_val) * 100
+                return None
+            entry["logs_pct"]     = _pct(entry["logs_gb_day"],    prev["logs_gb_day"])
+            entry["metrics_pct"]  = _pct(entry["metrics_ts"],     prev["metrics_ts"])
+            entry["tracing_pct"]  = _pct(entry["tracing_gb_day"], prev["tracing_gb_day"])
+            entry["rum_pct"]      = _pct(entry["rum_day"],         prev["rum_day"])
+        else:
+            entry["logs_pct"] = entry["metrics_pct"] = entry["tracing_pct"] = entry["rum_pct"] = None
+        results.append(entry)
+    return results
+
+
+def _trend_arrow(pct: float | None) -> str:
+    """Return a coloured HTML arrow for a % change."""
+    if pct is None:
+        return '<span style="color:#aaa">—</span>'
+    if pct > 5:
+        return f'<span style="color:#e04b2a">▲ {pct:+.1f}%</span>'
+    if pct < -5:
+        return f'<span style="color:#22a06b">▼ {pct:+.1f}%</span>'
+    return f'<span style="color:#888">≈ {pct:+.1f}%</span>'
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # SECTION 7 — CSV output
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -947,7 +992,11 @@ def generate_csv(snap: UsageSnapshot, cx: CoralogixSizing) -> bytes:
 # SECTION 8 — Excel output  (mirrors the template sheet layout)
 # ═══════════════════════════════════════════════════════════════════════════
 
-def generate_xlsx(snap: UsageSnapshot, cx: CoralogixSizing) -> bytes | None:
+def generate_xlsx(
+    snap: UsageSnapshot,
+    cx: CoralogixSizing,
+    all_pairs: list[tuple["UsageSnapshot", "CoralogixSizing"]] | None = None,
+) -> bytes | None:
     if not HAS_OPENPYXL:
         return None
 
@@ -1286,6 +1335,60 @@ def generate_xlsx(snap: UsageSnapshot, cx: CoralogixSizing) -> bytes | None:
                 if fill:
                     c.fill = fill
 
+    # ── Trend sheet (when multiple months available) ──────────────────────
+    if all_pairs and len(all_pairs) > 1:
+        trends = compute_trends(all_pairs)
+        ws4 = wb.create_sheet("Trend Analysis")
+        ws4.column_dimensions["A"].width = 30
+        for col_i in range(len(trends)):
+            ws4.column_dimensions[chr(66 + col_i * 2)].width = 16
+            ws4.column_dimensions[chr(67 + col_i * 2)].width = 12
+
+        # Header
+        hdr_cell(ws4, 1, 1, "Trend Analysis — TCO Metrics", bg=_PURPLE, sz=13)
+        ws4.merge_cells(f"A1:{chr(65 + len(trends)*2)}1")
+
+        # Month headers
+        ws4.cell(row=2, column=1, value="Metric").font = Font(bold=True, size=10)
+        for i, t in enumerate(trends):
+            c = ws4.cell(row=2, column=2 + i * 2, value=t["month"])
+            c.font = Font(bold=True, color=_WHITE, size=10)
+            c.fill = PatternFill("solid", fgColor=_ORANGE)
+            c.alignment = Alignment(horizontal="center")
+            if i > 0:
+                mc = ws4.cell(row=2, column=3 + i * 2 - 2 + 1, value="MoM %")
+                mc.font = Font(bold=True, color=_WHITE, size=9)
+                mc.fill = PatternFill("solid", fgColor="888888")
+                mc.alignment = Alignment(horizontal="center")
+
+        metrics_def = [
+            ("Logs",              "GB/day",       "logs_gb_day",    "logs_pct"),
+            ("Metrics",           "NumSeries",    "metrics_ts",     "metrics_pct"),
+            ("Tracing",           "GB/day",       "tracing_gb_day", "tracing_pct"),
+            ("RUM Sessions",      "sessions/day", "rum_day",        "rum_pct"),
+            ("RUM Recordings",    "sessions/day", "rum_rec_day",    None),
+        ]
+        for row_i, (label, unit, val_key, pct_key) in enumerate(metrics_def):
+            r = 3 + row_i
+            fill = PatternFill("solid", fgColor="F9F7FC") if row_i % 2 == 0 else None
+            c = ws4.cell(row=r, column=1, value=f"{label} ({unit})")
+            c.font = Font(size=10, bold=True)
+            if fill: c.fill = fill
+            for i, t in enumerate(trends):
+                val = t.get(val_key, 0) or 0
+                vc = ws4.cell(row=r, column=2 + i * 2, value=round(val, 2))
+                vc.font = Font(size=10)
+                vc.alignment = Alignment(horizontal="right")
+                if fill: vc.fill = fill
+                if i > 0 and pct_key:
+                    pct = t.get(pct_key)
+                    if pct is not None:
+                        pc = ws4.cell(row=r, column=3 + i * 2 - 2 + 1, value=round(pct, 1))
+                        pc.font = Font(size=10, bold=True,
+                                       color="E04B2A" if pct > 5 else ("22A06B" if pct < -5 else "888888"))
+                        pc.alignment = Alignment(horizontal="right")
+                        if fill: pc.fill = fill
+
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
@@ -1295,7 +1398,12 @@ def generate_xlsx(snap: UsageSnapshot, cx: CoralogixSizing) -> bytes | None:
 # SECTION 9 — HTML report  (self-contained, no external dependencies)
 # ═══════════════════════════════════════════════════════════════════════════
 
-def generate_html(snap: UsageSnapshot, cx: CoralogixSizing) -> bytes:
+def generate_html(
+    snap: UsageSnapshot,
+    cx: CoralogixSizing,
+    all_pairs: list[tuple["UsageSnapshot", "CoralogixSizing"]] | None = None,
+    trends: list[dict] | None = None,
+) -> bytes:
     # ── Coralogix brand colours ──────────────────────────────────────────────
     CX_ORANGE  = "#FF5B2D"
     CX_PURPLE  = "#4A2C6E"
@@ -1461,6 +1569,76 @@ def generate_html(snap: UsageSnapshot, cx: CoralogixSizing) -> bytes:
   </div>
 </section>"""
 
+    # ── Multi-month trend section ─────────────────────────────────────────
+    trend_section = ""
+    if trends and len(trends) > 1:
+        def _td_pct(pct):
+            return f'<td class="num">{_trend_arrow(pct)}</td>'
+
+        header_months = "".join(f"<th>{t['month']}</th>" for t in trends)
+        # helper: format value or em-dash
+        def _v(val, fmt=".2f"):
+            return f"{val:{fmt}}" if val else "—"
+
+        rows_data = [
+            ("Logs",         "GB/day",      [t["logs_gb_day"]    for t in trends], [t["logs_pct"]    for t in trends]),
+            ("Metrics",      "NumSeries",   [t["metrics_ts"]     for t in trends], [t["metrics_pct"] for t in trends]),
+            ("Tracing",      "GB/day",      [t["tracing_gb_day"] for t in trends], [t["tracing_pct"] for t in trends]),
+            ("RUM Sessions", "sessions/day",[t["rum_day"]        for t in trends], [t["rum_pct"]     for t in trends]),
+        ]
+
+        trend_rows = ""
+        for label, unit, vals, pcts in rows_data:
+            val_cells  = "".join(f'<td class="num">{_v(v)}</td>' for v in vals)
+            pct_cells  = "".join(_td_pct(p) for p in pcts)
+            trend_rows += f"<tr><td><strong>{label}</strong><br><small>{unit}</small></td>{val_cells}{pct_cells}</tr>"
+
+        # Growth classification across the full window
+        def _classify(pcts):
+            valid = [p for p in pcts if p is not None]
+            if not valid:
+                return ("—", "#aaa")
+            avg = sum(valid) / len(valid)
+            if avg > 10:    return ("Growing rapidly ▲", "#e04b2a")
+            if avg > 2:     return ("Growing ↑",         "#f59e0b")
+            if avg < -10:   return ("Declining rapidly ▼","#22a06b")
+            if avg < -2:    return ("Declining ↓",        "#22a06b")
+            return ("Stable ≈", "#888")
+
+        classifications = {
+            label: _classify(pcts)
+            for label, _, _, pcts in rows_data
+        }
+        classification_html = "".join(
+            f'<div class="cls-item"><span class="cls-label">{lbl}</span>'
+            f'<span class="cls-badge" style="color:{col};border-color:{col}">{txt}</span></div>'
+            for lbl, (txt, col) in classifications.items()
+        )
+
+        pct_headers = "".join(
+            f"<th>MoM {t['month']}</th>" for t in trends[1:]
+        ) if len(trends) > 1 else ""
+
+        trend_section = f"""
+<section>
+  {section_h2(f"Trend Analysis — {trends[0]['month']} → {trends[-1]['month']}", "#4A2C6E")}
+  <div class="cls-row">{classification_html}</div>
+  <div class="table-wrap" style="margin-top:14px"><table>
+    <thead>
+      <tr>
+        <th>Metric</th>
+        {header_months}
+        {pct_headers}
+      </tr>
+    </thead>
+    <tbody>{trend_rows}</tbody>
+  </table></div>
+  <p style="font-size:11px;color:{CX_MUTED};margin-top:8px">
+    ▲ &gt;5% growth &nbsp;|&nbsp; ▼ &gt;5% decline &nbsp;|&nbsp; ≈ stable (&lt;±5%)
+    &nbsp;|&nbsp; MoM = month-over-month % change vs. prior month
+  </p>
+</section>"""
+
     html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1579,6 +1757,15 @@ def generate_html(snap: UsageSnapshot, cx: CoralogixSizing) -> bytes:
     margin-top: 8px; line-height: 1.6;
   }}
 
+  /* ── Trend classification badges ── */
+  .cls-row {{ display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 4px; }}
+  .cls-item {{ display: flex; align-items: center; gap: 8px; }}
+  .cls-label {{ font-size: 12px; color: {CX_MUTED}; font-weight: 600; min-width: 80px; }}
+  .cls-badge {{
+    font-size: 11px; font-weight: 700; padding: 2px 10px;
+    border: 1.5px solid; border-radius: 20px;
+  }}
+
   /* ── Footer ── */
   footer {{
     text-align: center; padding: 20px;
@@ -1613,6 +1800,8 @@ def generate_html(snap: UsageSnapshot, cx: CoralogixSizing) -> bytes:
 {tco_card("Enter These Values in the Coralogix TCO Sheet")}
 
 <br>
+
+{trend_section}
 
 <!-- ── Bill Overview ──────────────────────────────────────────────────── -->
 <section>
@@ -1715,22 +1904,23 @@ def generate_html(snap: UsageSnapshot, cx: CoralogixSizing) -> bytes:
 # ═══════════════════════════════════════════════════════════════════════════
 
 def build_zip(
-    month: str,
+    label: str,
     raw_json: bytes,
-    csv_data: bytes,
+    per_month_csvs: list[tuple[str, bytes]],
     xlsx_data: bytes | None,
     html_data: bytes,
     out_dir: Path,
 ) -> Path:
-    zip_name = f"datadog_coralogix_report_{month}.zip"
+    zip_name = f"datadog_coralogix_report_{label}.zip"
     zip_path  = out_dir / zip_name
 
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr(f"datadog_raw_{month}.json",         raw_json)
-        zf.writestr(f"datadog_usage_{month}.csv",        csv_data)
-        zf.writestr(f"report_{month}.html",              html_data)
+        zf.writestr(f"datadog_raw_{label}.json",         raw_json)
+        for month, csv_bytes in per_month_csvs:
+            zf.writestr(f"datadog_usage_{month}.csv",    csv_bytes)
+        zf.writestr(f"report_{label}.html",              html_data)
         if xlsx_data:
-            zf.writestr(f"coralogix_sizing_{month}.xlsx", xlsx_data)
+            zf.writestr(f"coralogix_sizing_{label}.xlsx", xlsx_data)
 
     return zip_path
 
@@ -1744,6 +1934,20 @@ def _previous_month() -> str:
     first = today.replace(day=1)
     last_month = first - timedelta(days=1)
     return last_month.strftime("%Y-%m")
+
+
+def compute_month_range(end_month: str, lookback: int = 2) -> list[str]:
+    """Return a list of YYYY-MM strings from (end_month - lookback) through end_month."""
+    year, mon = map(int, end_month.split("-"))
+    months = []
+    for i in range(lookback, -1, -1):
+        m = mon - i
+        y = year
+        while m <= 0:
+            m += 12
+            y -= 1
+        months.append(f"{y:04d}-{m:02d}")
+    return months
 
 
 def main() -> None:
@@ -1772,25 +1976,32 @@ def main() -> None:
     if not app_key:
         sys.exit("\n  DD_APP_KEY is not set. Add it to your .env file or environment.\n")
 
+    # Compute the 3-month window (target month + 2 prior months)
+    months = compute_month_range(month, lookback=2)
+    start_month = months[0]
+    label = f"{months[0]}_to_{months[-1]}"
+
     print(f"\n  Datadog → Coralogix Usage Report")
-    print(f"  Site  : {site}")
-    print(f"  Month : {month}")
-    print(f"  Output: {out_dir}\n")
+    print(f"  Site    : {site}")
+    print(f"  Range   : {months[0]} → {months[-1]}  ({len(months)} months)")
+    print(f"  Output  : {out_dir}\n")
 
     client = DatadogClient(api_key, app_key, site)
 
-    # ── Fetch all data ────────────────────────────────────────────────────
-    summary_raw        = None
-    billable_raw       = None
-    print("  [1/2] Fetching usage summary …")
+    # ── Fetch all data (one API call covers the full range) ───────────────
+    summary_raw  = None
+    billable_raw = None
+
+    print(f"  [1/2] Fetching usage summary ({start_month} → {month}) …")
     try:
-        summary_raw = client.usage_summary(month, month)
-        print("        OK")
+        summary_raw = client.usage_summary(start_month, month)
+        n_months_returned = len(summary_raw.get("usage", []))
+        print(f"        OK — {n_months_returned} month(s) returned")
     except Exception as exc:
         print(f"        WARN: {exc}")
         summary_raw = {}
 
-    print("  [2/2] Fetching billable usage summary …")
+    print(f"  [2/2] Fetching billable usage summary ({month}) …")
     try:
         billable_raw = client.billable_summary(month)
         print("        OK")
@@ -1799,41 +2010,80 @@ def main() -> None:
     except Exception as exc:
         print(f"        WARN: {exc}")
 
-    # ── Process ───────────────────────────────────────────────────────────
-    print("\n  Processing …")
-    snap = extract_usage_snapshot(
-        summary_raw or {},
-        billable_raw,
-        month,
-        site,
-    )
-    cx = compute_coralogix_sizing(snap)
+    # ── Process each month ────────────────────────────────────────────────
+    print(f"\n  Processing {len(months)} months …")
+    all_pairs: list[tuple[UsageSnapshot, CoralogixSizing]] = []
+    all_usage_items = summary_raw.get("usage", []) if summary_raw else []
+
+    for m in months:
+        # Filter the full usage list to just this month's entry
+        m_items = [
+            u for u in all_usage_items
+            if str(u.get("date", u.get("start_date", ""))).startswith(m)
+        ]
+        if not m_items:
+            print(f"    {m}: no data returned — skipping")
+            continue
+        m_raw = {"usage": m_items}
+        # Billable summary only applies to the target (latest) month
+        snap = extract_usage_snapshot(
+            m_raw,
+            billable_raw if m == month else None,
+            m,
+            site,
+        )
+        cx = compute_coralogix_sizing(snap)
+        all_pairs.append((snap, cx))
+        print(f"    {m}: ✓  logs={cx.daily_logs_gb:.1f} GB/day  "
+              f"metrics={cx.total_ts:,.0f} TS  "
+              f"tracing={cx.daily_spans_ingest_gb:.1f} GB/day")
+
+    if not all_pairs:
+        sys.exit("\n  No data could be processed. Check your API keys and month range.\n")
+
+    # Latest month is the primary sizing reference
+    snap, cx = all_pairs[-1]
+    trends = compute_trends(all_pairs)
 
     # ── Generate outputs ──────────────────────────────────────────────────
-    print("  Generating outputs …")
-    raw_json  = json.dumps(snap.raw, indent=2, default=str).encode()
-    csv_data  = generate_csv(snap, cx)
-    xlsx_data = generate_xlsx(snap, cx)
-    html_data = generate_html(snap, cx)
+    print("\n  Generating outputs …")
+    combined_raw = {
+        "range": {"start": months[0], "end": months[-1]},
+        "months": {s.month: s.raw for s, _ in all_pairs},
+    }
+    raw_json     = json.dumps(combined_raw, indent=2, default=str).encode()
+    per_month_csvs = [(s.month, generate_csv(s, c)) for s, c in all_pairs]
+    xlsx_data    = generate_xlsx(snap, cx, all_pairs=all_pairs)
+    html_data    = generate_html(snap, cx, all_pairs=all_pairs, trends=trends)
 
-    zip_path = build_zip(month, raw_json, csv_data, xlsx_data, html_data, out_dir)
+    zip_path = build_zip(label, raw_json, per_month_csvs, xlsx_data, html_data, out_dir)
 
     # ── Print summary ─────────────────────────────────────────────────────
-    print(f"\n  ══════════════════════════════════════════")
-    print(f"  Coralogix TCO Sizing Summary — {month}")
-    print(f"  ══════════════════════════════════════════")
+    print(f"\n  ══════════════════════════════════════════════════")
+    print(f"  Coralogix TCO Sizing — Latest Month: {snap.month}")
+    print(f"  ══════════════════════════════════════════════════")
     print(f"  Logs     : {cx.daily_logs_gb:.2f} GB/day")
     print(f"  Metrics  : {cx.total_ts:,.0f} NumSeries")
     print(f"  Tracing  : {cx.daily_spans_ingest_gb:.2f} GB/day")
     print(f"  RUM      : {cx.rum_sessions_daily:,.0f} sessions/day  |  {cx.rum_session_recording_daily:,.0f} recordings/day")
-    print(f"  ══════════════════════════════════════════")
+    if len(all_pairs) > 1:
+        print(f"\n  Month-over-Month Trends (last → current):")
+        last_t = trends[-1]
+        for key, name in [("logs_pct","Logs"),("metrics_pct","Metrics"),
+                           ("tracing_pct","Tracing"),("rum_pct","RUM")]:
+            pct = last_t.get(key)
+            if pct is not None:
+                arrow = "▲" if pct > 0 else "▼"
+                print(f"    {name:<10}: {arrow} {abs(pct):.1f}%")
+    print(f"  ══════════════════════════════════════════════════")
     print(f"\n  Output ZIP : {zip_path}")
     print(f"  Contents   :")
-    print(f"    datadog_raw_{month}.json")
-    print(f"    datadog_usage_{month}.csv")
+    print(f"    datadog_raw_{label}.json")
+    for m, _ in per_month_csvs:
+        print(f"    datadog_usage_{m}.csv")
     if xlsx_data:
-        print(f"    coralogix_sizing_{month}.xlsx")
-    print(f"    report_{month}.html")
+        print(f"    coralogix_sizing_{label}.xlsx")
+    print(f"    report_{label}.html")
     print()
 
 
