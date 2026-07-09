@@ -996,6 +996,12 @@ def generate_csv(snap: UsageSnapshot, cx: CoralogixSizing) -> bytes:
     w.writerow(["Tracing GB/day",       f"{cx.daily_spans_ingest_gb:.2f}"])
     w.writerow(["RUM Total Sessions/day",       f"{cx.rum_sessions_daily:.0f}"])
     w.writerow(["RUM Session Recording/day",    f"{cx.rum_session_recording_daily:.0f}"])
+    w.writerow([])
+    w.writerow(["-- Summary for Checkly --"])
+    w.writerow(["API checks / day",       f"{cx.synthetics_api_daily:.0f}"])
+    w.writerow(["Browser checks / day",   f"{cx.synthetics_browser_daily:.0f}"])
+    w.writerow(["API checks / month",     f"{cx.synthetics_api_monthly:.0f}"])
+    w.writerow(["Browser checks / month", f"{cx.synthetics_browser_monthly:.0f}"])
 
     return buf.getvalue().encode()
 
