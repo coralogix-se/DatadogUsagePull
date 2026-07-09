@@ -1275,20 +1275,31 @@ def generate_xlsx(snap: UsageSnapshot, cx: CoralogixSizing) -> bytes | None:
 # ═══════════════════════════════════════════════════════════════════════════
 
 def generate_html(snap: UsageSnapshot, cx: CoralogixSizing) -> bytes:
+    # ── Coralogix brand colours ──────────────────────────────────────────────
+    CX_ORANGE  = "#FF5B2D"
+    CX_PURPLE  = "#4A2C6E"
+    CX_DARK    = "#1A1028"
+    CX_BG      = "#F6F4FA"
+    CX_CARD    = "#FFFFFF"
+    CX_BORDER  = "#E5E0EF"
+    CX_MUTED   = "#7B6F8C"
 
-    def tile(label: str, value: str, sub: str = "", color: str = "#632CA6") -> str:
+    def tile(label: str, value: str, sub: str = "", accent: str = CX_PURPLE) -> str:
         return f"""
         <div class="tile">
           <div class="tile-label">{label}</div>
-          <div class="tile-value" style="color:{color}">{value}</div>
+          <div class="tile-value" style="color:{accent}">{value}</div>
           {f'<div class="tile-sub">{sub}</div>' if sub else ""}
         </div>"""
 
     def row(label: str, value: str, note: str = "", even: bool = False) -> str:
-        bg = "#f9f9f9" if even else "#ffffff"
+        bg = "#F9F7FC" if even else CX_CARD
         return (f'<tr style="background:{bg}">'
                 f'<td>{label}</td><td class="num">{value}</td>'
                 f'<td class="note">{note}</td></tr>')
+
+    def section_h2(title: str, accent: str = CX_ORANGE) -> str:
+        return f'<h2 style="border-left:4px solid {accent}">{title}</h2>'
 
     # ── Bill Overview tiles ───────────────────────────────────────────────
     infra_tiles = "".join([
@@ -1304,8 +1315,8 @@ def generate_html(snap: UsageSnapshot, cx: CoralogixSizing) -> bytes:
         tile("APM Fargate Tasks",        _fmt(snap.apm_fargate, 0)),
     ])
     metrics_tiles = "".join([
-        tile("Custom Metrics",           _fmt(snap.custom_metrics),           color="#1a56db"),
-        tile("Ingested Custom Metrics",  _fmt(snap.ingested_custom_metrics),  color="#1a56db"),
+        tile("Custom Metrics",           _fmt(snap.custom_metrics)),
+        tile("Ingested Custom Metrics",  _fmt(snap.ingested_custom_metrics)),
     ])
     logs_tiles = "".join([
         tile("Ingested Logs",            _bytes_to_tb(snap.ingested_logs_bytes)),
@@ -1367,7 +1378,7 @@ def generate_html(snap: UsageSnapshot, cx: CoralogixSizing) -> bytes:
         row("Host+Container TimeSeries",     f"{cx.host_container_ts:,.0f}",                     f"× {TS_PER_HOST} TS each", True),
         row("Serverless Functions TS",       f"{cx.sw_func_ts:,.2f}",                            "daily_funcs × 0.30"),
         row("Serverless Invocations TS",     f"{cx.sw_invoc_ts:,.2f}",                           "daily_invoc × 0.30", True),
-        row("Total TimeSeries (NumSeries)",  f"{cx.total_ts:,.0f}",                             "sum of all TS"),
+        row("Total TimeSeries (NumSeries)",  f"{cx.total_ts:,.0f}",                              "sum of all TS"),
         row("Metrics Units / Day",           f"{cx.metrics_units_per_day:.2f}",                  f"total_ts × {TS_TO_UNITS}", True),
     ])
     cx_rows_tracing = "".join([
@@ -1383,8 +1394,41 @@ def generate_html(snap: UsageSnapshot, cx: CoralogixSizing) -> bytes:
         row("RUM Errors / Day",              f"{cx.rum_errors_per_day:,.2f}",                    "error_tracking ÷ 30"),
     ])
 
-    cost_section = ""
-    cost_section = ""
+    # ── TCO input card (reused at top & bottom) ───────────────────────────
+    def tco_card(heading: str) -> str:
+        return f"""
+<section class="tco-card">
+  <div class="tco-header">
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+    {heading}
+  </div>
+  <div class="tco-grid">
+    <div class="tco-item">
+      <div class="tco-pill">Logs</div>
+      <div class="tco-val">{cx.daily_logs_gb:.2f}</div>
+      <div class="tco-unit">GB / day</div>
+      <div class="tco-sub">→ Monitoring: {cx.daily_logs_mon_gb:.2f} GB/day<br>→ Compliance: {cx.daily_logs_comp_gb:.2f} GB/day</div>
+    </div>
+    <div class="tco-item">
+      <div class="tco-pill">Metrics</div>
+      <div class="tco-val">{cx.total_ts:,.0f}</div>
+      <div class="tco-unit">NumSeries</div>
+      <div class="tco-sub">TimeSeries / custom metrics</div>
+    </div>
+    <div class="tco-item">
+      <div class="tco-pill">Tracing</div>
+      <div class="tco-val">{cx.daily_spans_ingest_gb:.2f}</div>
+      <div class="tco-unit">GB / day</div>
+      <div class="tco-sub">ingested spans (Tracing Without Limits)</div>
+    </div>
+    <div class="tco-item">
+      <div class="tco-pill">RUM</div>
+      <div class="tco-val">{cx.rum_sessions_monthly:,.0f}</div>
+      <div class="tco-unit">sessions / month</div>
+      <div class="tco-sub">browser + mobile sessions</div>
+    </div>
+  </div>
+</section>"""
 
     html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -1394,46 +1438,139 @@ def generate_html(snap: UsageSnapshot, cx: CoralogixSizing) -> bytes:
 <title>Datadog → Coralogix Report — {snap.month}</title>
 <style>
   *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
-  body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-          background: #f0f0f0; color: #1a1a1a; font-size: 14px; }}
-  header {{ background: #632CA6; color: #fff; padding: 24px 32px; }}
-  header h1 {{ font-size: 22px; font-weight: 700; margin-bottom: 4px; }}
-  header p  {{ font-size: 13px; opacity: 0.85; }}
-  .freshness {{ background: #fff8e1; border-left: 4px solid #f59e0b;
-               padding: 10px 16px; margin: 16px 32px; font-size: 12px; color: #92400e; }}
-  main {{ padding: 16px 32px 40px; }}
-  section {{ margin-bottom: 32px; }}
-  h2 {{ font-size: 15px; font-weight: 700; margin-bottom: 12px;
-        padding: 8px 12px; background: #FF5C35; color: #fff; border-radius: 4px; }}
+  body {{
+    font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: {CX_BG}; color: #1A1028; font-size: 14px; line-height: 1.5;
+  }}
+
+  /* ── Header ── */
+  header {{
+    background: {CX_DARK};
+    color: #fff;
+    padding: 28px 40px 24px;
+    display: flex; align-items: center; gap: 20px;
+  }}
+  .cx-logo {{ display: flex; align-items: center; gap: 10px; }}
+  .cx-logo-dot {{ width: 36px; height: 36px; border-radius: 8px;
+                  background: {CX_ORANGE}; flex-shrink: 0; }}
+  header h1 {{ font-size: 20px; font-weight: 700; letter-spacing: -0.3px; }}
+  header .meta {{ font-size: 12px; color: rgba(255,255,255,0.6); margin-top: 3px; }}
+  header .meta strong {{ color: rgba(255,255,255,0.9); }}
+
+  /* ── Freshness banner ── */
+  .freshness {{
+    background: #FFF8E7; border-left: 4px solid #F59E0B;
+    padding: 10px 40px; font-size: 12px; color: #92400E;
+  }}
+
+  /* ── Layout ── */
+  main {{ padding: 28px 40px 56px; max-width: 1280px; margin: 0 auto; }}
+  section {{ margin-bottom: 36px; }}
+
+  /* ── Section headings ── */
+  h2 {{
+    font-size: 13px; font-weight: 700; letter-spacing: 0.06em;
+    text-transform: uppercase; color: {CX_PURPLE};
+    border-left: 4px solid {CX_ORANGE};
+    padding: 6px 0 6px 12px; margin-bottom: 14px;
+    background: none;
+  }}
+
+  /* ── Metric tiles ── */
   .tile-grid {{ display: flex; flex-wrap: wrap; gap: 10px; }}
-  .tile {{ background: #fff; border: 1px solid #e0e0e0; border-radius: 6px;
-           padding: 12px 16px; min-width: 160px; flex: 1 1 160px; max-width: 220px; }}
-  .tile-label {{ font-size: 11px; color: #666; margin-bottom: 4px; }}
-  .tile-value {{ font-size: 20px; font-weight: 700; color: #632CA6; }}
-  .tile-sub   {{ font-size: 11px; color: #999; margin-top: 2px; }}
-  table {{ width: 100%; border-collapse: collapse; background: #fff;
-           border: 1px solid #e0e0e0; border-radius: 6px; overflow: hidden; }}
-  th {{ background: #3c3c3c; color: #fff; text-align: left; padding: 8px 12px; font-size: 12px; }}
-  td {{ padding: 7px 12px; border-bottom: 1px solid #f0f0f0; font-size: 13px; }}
-  td.num  {{ text-align: right; font-weight: 600; font-variant-numeric: tabular-nums; }}
-  td.note {{ font-size: 11px; color: #888; }}
-  .summary-box {{ background: #fff; border: 2px solid #FF5C35; border-radius: 8px;
-                 padding: 20px 24px; display: flex; flex-wrap: wrap; gap: 24px; }}
-  .summary-item {{ flex: 1 1 180px; }}
-  .summary-item .s-label {{ font-size: 11px; color: #888; text-transform: uppercase;
-                             letter-spacing: 0.05em; margin-bottom: 4px; }}
-  .summary-item .s-value {{ font-size: 24px; font-weight: 800; color: #FF5C35; }}
-  .summary-item .s-unit  {{ font-size: 12px; color: #666; margin-top: 2px; }}
-  footer {{ text-align: center; padding: 16px; font-size: 11px; color: #999; }}
+  .tile {{
+    background: {CX_CARD}; border: 1px solid {CX_BORDER}; border-radius: 10px;
+    padding: 14px 16px; min-width: 150px; flex: 1 1 150px; max-width: 200px;
+    box-shadow: 0 1px 4px rgba(74,44,110,.06);
+    transition: box-shadow .15s;
+  }}
+  .tile:hover {{ box-shadow: 0 4px 14px rgba(74,44,110,.12); }}
+  .tile-label {{ font-size: 11px; color: {CX_MUTED}; margin-bottom: 5px; font-weight: 500; }}
+  .tile-value {{ font-size: 19px; font-weight: 800; color: {CX_PURPLE}; letter-spacing: -0.5px; }}
+  .tile-sub   {{ font-size: 10px; color: #AAA; margin-top: 3px; }}
+
+  /* ── Tables ── */
+  .table-wrap {{
+    background: {CX_CARD}; border: 1px solid {CX_BORDER}; border-radius: 10px;
+    overflow: hidden; box-shadow: 0 1px 4px rgba(74,44,110,.06);
+  }}
+  table {{ width: 100%; border-collapse: collapse; }}
+  th {{
+    background: {CX_DARK}; color: rgba(255,255,255,.85);
+    text-align: left; padding: 9px 14px; font-size: 11px;
+    letter-spacing: 0.05em; text-transform: uppercase;
+  }}
+  td {{ padding: 8px 14px; border-bottom: 1px solid #F0EBF8; font-size: 13px; }}
+  tr:last-child td {{ border-bottom: none; }}
+  td.num  {{ text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; color: {CX_PURPLE}; }}
+  td.note {{ font-size: 11px; color: {CX_MUTED}; }}
+
+  /* ── TCO card ── */
+  .tco-card {{
+    background: {CX_DARK};
+    border-radius: 14px;
+    padding: 28px 32px;
+    box-shadow: 0 4px 24px rgba(26,16,40,.25);
+  }}
+  .tco-header {{
+    display: flex; align-items: center; gap: 10px;
+    font-size: 16px; font-weight: 800; color: #fff;
+    margin-bottom: 24px; letter-spacing: -0.3px;
+  }}
+  .tco-header svg {{ color: {CX_ORANGE}; flex-shrink: 0; }}
+  .tco-grid {{
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 16px;
+  }}
+  .tco-item {{
+    background: rgba(255,255,255,.07);
+    border: 1px solid rgba(255,255,255,.12);
+    border-radius: 10px; padding: 18px 20px;
+  }}
+  .tco-pill {{
+    display: inline-block;
+    background: {CX_ORANGE}; color: #fff;
+    font-size: 10px; font-weight: 700; letter-spacing: 0.08em;
+    text-transform: uppercase; padding: 2px 8px; border-radius: 20px;
+    margin-bottom: 10px;
+  }}
+  .tco-val {{
+    font-size: 32px; font-weight: 900; color: #fff;
+    letter-spacing: -1px; line-height: 1.1;
+  }}
+  .tco-unit {{
+    font-size: 12px; color: rgba(255,255,255,.55); margin-top: 4px;
+    text-transform: uppercase; letter-spacing: 0.04em;
+  }}
+  .tco-sub {{
+    font-size: 11px; color: rgba(255,255,255,.40);
+    margin-top: 8px; line-height: 1.6;
+  }}
+
+  /* ── Footer ── */
+  footer {{
+    text-align: center; padding: 20px;
+    font-size: 11px; color: {CX_MUTED};
+    border-top: 1px solid {CX_BORDER};
+  }}
 </style>
 </head>
 <body>
+
 <header>
-  <h1>Datadog → Coralogix Usage Report</h1>
-  <p>Month: <strong>{snap.month}</strong> &nbsp;|&nbsp;
-     Account: <strong>{snap.account_name or "N/A"}</strong> &nbsp;|&nbsp;
-     Site: <strong>{snap.site}</strong> &nbsp;|&nbsp;
-     Generated: <strong>{snap.pulled_at[:19]} UTC</strong></p>
+  <div class="cx-logo">
+    <div class="cx-logo-dot"></div>
+  </div>
+  <div>
+    <h1>Datadog → Coralogix Usage Report</h1>
+    <div class="meta">
+      Month: <strong>{snap.month}</strong> &nbsp;&bull;&nbsp;
+      Account: <strong>{snap.account_name or "N/A"}</strong> &nbsp;&bull;&nbsp;
+      Site: <strong>{snap.site}</strong> &nbsp;&bull;&nbsp;
+      Generated: <strong>{snap.pulled_at[:19]} UTC</strong>
+    </div>
+  </div>
 </header>
 
 <div class="freshness">
@@ -1442,122 +1579,98 @@ def generate_html(snap: UsageSnapshot, cx: CoralogixSizing) -> bytes:
 
 <main>
 
-<!-- ── TCO Summary ─────────────────────────────────────────────────────── -->
-<section>
-  <h2>Coralogix TCO Summary</h2>
-  <p style="font-size:12px;color:#666;margin-bottom:12px;">
-    Apply these four numbers to the Coralogix TCO Calculator.
-  </p>
-  <div class="summary-box">
-    <div class="summary-item">
-      <div class="s-label">Logs</div>
-      <div class="s-value">{cx.daily_logs_gb:.2f}</div>
-      <div class="s-unit">GB / day</div>
-    </div>
-    <div class="summary-item">
-      <div class="s-label">Metrics</div>
-      <div class="s-value">{_fmt(cx.total_ts, 1)}</div>
-      <div class="s-unit">NumSeries (TimeSeries)</div>
-    </div>
-    <div class="summary-item">
-      <div class="s-label">Tracing</div>
-      <div class="s-value">{cx.daily_spans_ingest_gb:.2f}</div>
-      <div class="s-unit">GB / day</div>
-    </div>
-    <div class="summary-item">
-      <div class="s-label">RUM Sessions</div>
-      <div class="s-value">{_fmt(cx.rum_sessions_monthly, 1)}</div>
-      <div class="s-unit">sessions / month</div>
-    </div>
-  </div>
-</section>
+{tco_card("Enter These Values in the Coralogix TCO Sheet")}
+
+<br>
 
 <!-- ── Bill Overview ──────────────────────────────────────────────────── -->
 <section>
-  <h2>Infrastructure</h2>
+  {section_h2("Infrastructure")}
   <div class="tile-grid">{infra_tiles}</div>
 </section>
 <section>
-  <h2>Custom Metrics</h2>
+  {section_h2("Custom Metrics")}
   <div class="tile-grid">{metrics_tiles}</div>
 </section>
 <section>
-  <h2>Logs</h2>
+  {section_h2("Logs")}
   <div class="tile-grid">{logs_tiles}</div>
 </section>
 <section>
-  <h2>APM / Tracing</h2>
+  {section_h2("APM / Tracing")}
   <div class="tile-grid">{apm_tiles}</div>
 </section>
 <section>
-  <h2>Serverless</h2>
+  {section_h2("Serverless")}
   <div class="tile-grid">{sl_tiles}</div>
 </section>
 <section>
-  <h2>RUM</h2>
+  {section_h2("RUM")}
   <div class="tile-grid">{rum_tiles}</div>
 </section>
 <section>
-  <h2>Synthetics</h2>
+  {section_h2("Synthetics")}
   <div class="tile-grid">{synth_tiles}</div>
 </section>
 <section>
-  <h2>Other Products</h2>
+  {section_h2("Other Products")}
   <div class="tile-grid">{other_tiles}</div>
 </section>
 
-{cost_section}
-
 <!-- ── Coralogix Sizing Detail ────────────────────────────────────────── -->
 <section>
-  <h2>Coralogix Sizing — Logs</h2>
-  <table>
+  {section_h2("Coralogix Sizing — Logs")}
+  <div class="table-wrap"><table>
     <thead><tr><th>Metric</th><th class="num">Value</th><th class="note">Notes</th></tr></thead>
     <tbody>{cx_rows_logs}</tbody>
-  </table>
+  </table></div>
 </section>
 <section>
-  <h2>Coralogix Sizing — Metrics</h2>
-  <table>
+  {section_h2("Coralogix Sizing — Metrics")}
+  <div class="table-wrap"><table>
     <thead><tr><th>Metric</th><th class="num">Value</th><th class="note">Notes</th></tr></thead>
     <tbody>{cx_rows_metrics}</tbody>
-  </table>
+  </table></div>
 </section>
 <section>
-  <h2>Coralogix Sizing — Tracing</h2>
-  <table>
+  {section_h2("Coralogix Sizing — Tracing")}
+  <div class="table-wrap"><table>
     <thead><tr><th>Metric</th><th class="num">Value</th><th class="note">Notes</th></tr></thead>
     <tbody>{cx_rows_tracing}</tbody>
-  </table>
+  </table></div>
 </section>
 <section>
-  <h2>Coralogix Sizing — RUM</h2>
-  <table>
+  {section_h2("Coralogix Sizing — RUM")}
+  <div class="table-wrap"><table>
     <thead><tr><th>Metric</th><th class="num">Value</th><th class="note">Notes</th></tr></thead>
     <tbody>{cx_rows_rum}</tbody>
-  </table>
+  </table></div>
 </section>
 
 <!-- ── Sizing Assumptions ────────────────────────────────────────────── -->
 <section>
-  <h2>Sizing Assumptions</h2>
-  <table>
-    <thead><tr><th>Parameter</th><th class="num">Value</th></tr></thead>
+  {section_h2("Sizing Assumptions")}
+  <div class="table-wrap"><table>
+    <thead><tr><th>Parameter</th><th class="num">Value</th><th class="note">Notes</th></tr></thead>
     <tbody>
-      {row("Average log line size",         f"{AVG_LOG_SIZE_KB} KB",       "", True)}
-      {row("Average span size",             f"{AVG_SPAN_SIZE_KB} KB")}
-      {row("Time series per host/container",f"{TS_PER_HOST}",              "TS", True)}
-      {row("TS-to-Units factor",            f"{TS_TO_UNITS}",              "Coralogix metrics conversion")}
-      {row("Days per month",                f"{int(DAYS_PER_MONTH)}",      "", True)}
-      {row("Log tier split",f"{int(LOG_TIER_MON*100)}% Mon / {int(LOG_TIER_COMP*100)}% Comp")}
+      {row("Average log line size",          f"{AVG_LOG_SIZE_KB} KB",       "", True)}
+      {row("Average span size",              f"{AVG_SPAN_SIZE_KB} KB")}
+      {row("TimeSeries per host/container",  f"{TS_PER_HOST}",              "", True)}
+      {row("TS-to-Units factor",             f"{TS_TO_UNITS}",              "Coralogix metrics conversion")}
+      {row("Days per month",                 f"{int(DAYS_PER_MONTH)}",      "", True)}
+      {row("Log tier split",                 f"{int(LOG_TIER_MON*100)}% Monitoring / {int(LOG_TIER_COMP*100)}% Compliance")}
     </tbody>
-  </table>
+  </table></div>
 </section>
 
+<!-- ── Bottom TCO summary ─────────────────────────────────────────────── -->
+{tco_card("Summary — Enter These Values in the Coralogix TCO Sheet")}
+
 </main>
+
 <footer>
-  Datadog → Coralogix Usage Report · {snap.month} ·
-  Generated {snap.pulled_at[:10]} · dd_usage_pull.py
+  Datadog → Coralogix Usage Report &nbsp;&bull;&nbsp; {snap.month} &nbsp;&bull;&nbsp;
+  Generated {snap.pulled_at[:10]} &nbsp;&bull;&nbsp; dd_usage_pull.py
 </footer>
 </body>
 </html>"""
