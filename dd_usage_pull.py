@@ -281,9 +281,10 @@ class CoralogixSizing:
     daily_spans_archive_gb:   float = 0
 
     # ── RUM ─────────────────────────────────────────────────────────────────
-    rum_sessions_monthly:     float = 0
-    rum_sessions_daily:       float = 0
-    rum_errors_per_day:       float = 0
+    rum_sessions_monthly:        float = 0
+    rum_sessions_daily:          float = 0
+    rum_session_recording_daily: float = 0
+    rum_errors_per_day:          float = 0
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -772,8 +773,9 @@ def compute_coralogix_sizing(snap: UsageSnapshot) -> CoralogixSizing:
     cx.daily_spans_archive_gb = cx.daily_spans_ingest_gb - cx.daily_spans_indexed_gb
 
     # ── RUM ──────────────────────────────────────────────────────────────────
-    cx.rum_sessions_monthly = snap.rum_sessions
-    cx.rum_sessions_daily   = snap.rum_sessions / DAYS_PER_MONTH
+    cx.rum_sessions_monthly        = snap.rum_sessions
+    cx.rum_sessions_daily          = snap.rum_sessions / DAYS_PER_MONTH
+    cx.rum_session_recording_daily = snap.session_replay / DAYS_PER_MONTH
     cx.rum_errors_per_day   = snap.rum_errors / DAYS_PER_MONTH
 
     return cx
@@ -918,7 +920,8 @@ def generate_csv(snap: UsageSnapshot, cx: CoralogixSizing) -> bytes:
 
     w.writerow(["-- RUM --"])
     w.writerow(["RUM Sessions/month",               f"{cx.rum_sessions_monthly:.0f}"])
-    w.writerow(["RUM Sessions/day",                 f"{cx.rum_sessions_daily:.0f}"])
+    w.writerow(["RUM Total Sessions/day",           f"{cx.rum_sessions_daily:.0f}"])
+    w.writerow(["RUM Session Recording/day",        f"{cx.rum_session_recording_daily:.0f}"])
     w.writerow(["RUM Errors/day",                   f"{cx.rum_errors_per_day:.2f}"])
     w.writerow([])
 
@@ -926,7 +929,8 @@ def generate_csv(snap: UsageSnapshot, cx: CoralogixSizing) -> bytes:
     w.writerow(["Logs GB/day",          f"{cx.daily_logs_gb:.2f}"])
     w.writerow(["Metrics NumSeries",    f"{cx.total_ts:.0f}"])
     w.writerow(["Tracing GB/day",       f"{cx.daily_spans_ingest_gb:.2f}"])
-    w.writerow(["RUM Sessions/day",     f"{cx.rum_sessions_daily:.0f}"])
+    w.writerow(["RUM Total Sessions/day",       f"{cx.rum_sessions_daily:.0f}"])
+    w.writerow(["RUM Session Recording/day",    f"{cx.rum_session_recording_daily:.0f}"])
 
     return buf.getvalue().encode()
 
@@ -1196,15 +1200,17 @@ def generate_xlsx(snap: UsageSnapshot, cx: CoralogixSizing) -> bytes | None:
             ("  Archive (GB/day)",            cx.daily_spans_archive_gb,       "GB/day",     "daily - indexed_daily"),
         ]),
         ("RUM", _ORANGE, [
-            ("RUM Sessions / Month",          cx.rum_sessions_monthly,         "sessions",   "rum_total_session_count"),
-            ("RUM Sessions / Day",            cx.rum_sessions_daily,           "sessions",   "monthly ÷ 30"),
+            ("RUM Sessions / Month",              cx.rum_sessions_monthly,         "sessions",   "rum_total_session_count"),
+            ("Total Sessions / Day",              cx.rum_sessions_daily,           "sessions/day", "monthly ÷ 30"),
+            ("Session Recording / Day (Replay)",  cx.rum_session_recording_daily,  "sessions/day", "replay ÷ 30"),
             ("RUM Errors / Day",              cx.rum_errors_per_day,           "events/day", "error_tracking_events ÷ 30"),
         ]),
         ("SUMMARY — Apply to Coralogix TCO Calculator", _PURPLE, [
             ("Logs GB/day",                   cx.daily_logs_gb,                "GB/day",     ""),
             ("Metrics NumSeries",             cx.total_ts,                     "NumSeries",  ""),
             ("Tracing GB/day",                cx.daily_spans_ingest_gb,        "GB/day",     ""),
-            ("RUM Sessions/day",              cx.rum_sessions_daily,           "sessions",   ""),
+            ("RUM Total Sessions/day",        cx.rum_sessions_daily,           "sessions/day", ""),
+            ("RUM Session Recording/day",     cx.rum_session_recording_daily,  "sessions/day", "replay"),
         ]),
     ]
 
@@ -1394,9 +1400,10 @@ def generate_html(snap: UsageSnapshot, cx: CoralogixSizing) -> bytes:
         row("  → Archive",                   f"{cx.daily_spans_archive_gb:.2f} GB/day",          ""),
     ])
     cx_rows_rum = "".join([
-        row("RUM Sessions / Month",          f"{cx.rum_sessions_monthly:,.0f}",                  "", True),
-        row("RUM Sessions / Day",            f"{cx.rum_sessions_daily:,.0f}",                    "monthly ÷ 30"),
-        row("RUM Errors / Day",              f"{cx.rum_errors_per_day:,.2f}",                    "error_tracking ÷ 30", True),
+        row("RUM Sessions / Month",              f"{cx.rum_sessions_monthly:,.0f}",              "", True),
+        row("→ Total Sessions / Day",            f"{cx.rum_sessions_daily:,.0f}",                "monthly ÷ 30"),
+        row("→ Session Recording / Day (Replay)",f"{cx.rum_session_recording_daily:,.0f}",       "replay ÷ 30", True),
+        row("RUM Errors / Day",                  f"{cx.rum_errors_per_day:,.2f}",                "error_tracking ÷ 30"),
     ])
 
     # ── TCO input card (reused at top & bottom) ───────────────────────────
@@ -1427,10 +1434,16 @@ def generate_html(snap: UsageSnapshot, cx: CoralogixSizing) -> bytes:
       <div class="tco-sub">ingested spans (Tracing Without Limits)</div>
     </div>
     <div class="tco-item">
-      <div class="tco-pill">RUM</div>
+      <div class="tco-pill">RUM — Sessions</div>
       <div class="tco-val">{cx.rum_sessions_daily:,.0f}</div>
       <div class="tco-unit">sessions / day</div>
-      <div class="tco-sub">browser + mobile sessions</div>
+      <div class="tco-sub">browser + mobile (Total Sessions/Day)</div>
+    </div>
+    <div class="tco-item">
+      <div class="tco-pill">RUM — Recording</div>
+      <div class="tco-val">{cx.rum_session_recording_daily:,.0f}</div>
+      <div class="tco-unit">recordings / day</div>
+      <div class="tco-sub">session replay (Total Sessions Recording/Day)</div>
     </div>
   </div>
 </section>"""
@@ -1798,7 +1811,7 @@ def main() -> None:
     print(f"  Logs     : {cx.daily_logs_gb:.2f} GB/day")
     print(f"  Metrics  : {cx.total_ts:,.0f} NumSeries")
     print(f"  Tracing  : {cx.daily_spans_ingest_gb:.2f} GB/day")
-    print(f"  RUM      : {cx.rum_sessions_daily:,.0f} sessions/day  ({cx.rum_sessions_monthly:,.0f}/month)")
+    print(f"  RUM      : {cx.rum_sessions_daily:,.0f} sessions/day  |  {cx.rum_session_recording_daily:,.0f} recordings/day")
     print(f"  ══════════════════════════════════════════")
     print(f"\n  Output ZIP : {zip_path}")
     print(f"  Contents   :")
