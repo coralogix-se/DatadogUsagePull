@@ -1435,19 +1435,7 @@ def generate_html(snap: UsageSnapshot, cx: CoralogixSizing) -> bytes:
     ])
 
     cost_section = ""
-    if any(v is not None for v in [snap.estimated_cost_usd, snap.historical_cost_usd, snap.projected_cost_usd]):
-        cost_section = f"""
-        <section>
-          <h2>Cost Summary</h2>
-          <table>
-            <thead><tr><th>Period</th><th class="num">Amount (USD)</th><th class="note">Notes</th></tr></thead>
-            <tbody>
-              {row("Estimated MTD Cost", _usd(snap.estimated_cost_usd), "month-to-date")}
-              {row("Historical Cost",    _usd(snap.historical_cost_usd), "last closed month", True)}
-              {row("Projected EOM Cost", _usd(snap.projected_cost_usd), "end-of-month forecast")}
-            </tbody>
-          </table>
-        </section>"""
+    cost_section = ""
 
     html = f"""<!DOCTYPE html>
 <html lang="en">
