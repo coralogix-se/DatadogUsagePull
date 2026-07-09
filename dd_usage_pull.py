@@ -71,6 +71,8 @@ HOURS_PER_MONTH  = 30.0 * 24  # 720 — Datadog _sum fields for hosts/containers
 SW_LABEL_FACTOR  = 0.30    # serverless TS = invocations × 3 labels × 10% unique = ×0.30
 LOG_TIER_MON     = 0.70    # Monitoring share of ingested logs
 LOG_TIER_COMP    = 0.30    # Compliance share
+SPAN_TIER_MON    = 0.10    # Monitoring share of ingested spans
+SPAN_TIER_COMP   = 0.90    # Compliance share of ingested spans
 
 KNOWN_SITES: dict[str, str] = {
     "datadoghq.com":     "https://api.datadoghq.com",
@@ -277,6 +279,8 @@ class CoralogixSizing:
     indexed_spans_gb_month:   float = 0
     indexed_pct_spans:        float = 0
     daily_spans_ingest_gb:    float = 0
+    daily_spans_mon_gb:       float = 0
+    daily_spans_comp_gb:      float = 0
     daily_spans_indexed_gb:   float = 0
     daily_spans_archive_gb:   float = 0
 
@@ -769,6 +773,8 @@ def compute_coralogix_sizing(snap: UsageSnapshot) -> CoralogixSizing:
         cx.indexed_pct_spans = cx.indexed_spans_gb_month / cx.ingested_spans_gb_month
 
     cx.daily_spans_ingest_gb  = cx.ingested_spans_gb_month / DAYS_PER_MONTH
+    cx.daily_spans_mon_gb     = cx.daily_spans_ingest_gb * SPAN_TIER_MON
+    cx.daily_spans_comp_gb    = cx.daily_spans_ingest_gb * SPAN_TIER_COMP
     cx.daily_spans_indexed_gb = cx.daily_spans_ingest_gb * cx.indexed_pct_spans
     cx.daily_spans_archive_gb = cx.daily_spans_ingest_gb - cx.daily_spans_indexed_gb
 
@@ -914,6 +920,8 @@ def generate_csv(snap: UsageSnapshot, cx: CoralogixSizing) -> bytes:
     w.writerow(["Indexed Spans (GB/month)",         f"{cx.indexed_spans_gb_month:.2f}"])
     w.writerow(["Indexed Span Percentage",          f"{cx.indexed_pct_spans*100:.4f}%"])
     w.writerow(["Daily Ingested Spans (GB/day)",    f"{cx.daily_spans_ingest_gb:.2f}"])
+    w.writerow(["  Monitoring 10% (GB/day)",        f"{cx.daily_spans_mon_gb:.2f}"])
+    w.writerow(["  Compliance 90% (GB/day)",        f"{cx.daily_spans_comp_gb:.2f}"])
     w.writerow(["  Indexed (GB/day)",               f"{cx.daily_spans_indexed_gb:.4f}"])
     w.writerow(["  Archive (GB/day)",               f"{cx.daily_spans_archive_gb:.2f}"])
     w.writerow([])
@@ -1121,6 +1129,7 @@ def generate_xlsx(snap: UsageSnapshot, cx: CoralogixSizing) -> bytes | None:
         ("TS-to-Units factor (metrics)",   TS_TO_UNITS, "Units/TS"),
         ("Days per month",    DAYS_PER_MONTH, "days"),
         ("Log tier split",    f"{int(LOG_TIER_MON*100)}% Mon / {int(LOG_TIER_COMP*100)}% Comp", ""),
+        ("Span tier split",   f"{int(SPAN_TIER_MON*100)}% Mon / {int(SPAN_TIER_COMP*100)}% Comp", ""),
     ]
     for i, (label, val, unit) in enumerate(assumptions, start=5):
         ws2.cell(row=i, column=1, value=label).font = Font(size=10)
@@ -1196,6 +1205,8 @@ def generate_xlsx(snap: UsageSnapshot, cx: CoralogixSizing) -> bytes | None:
             ("Indexed Spans",                 cx.indexed_spans_gb_month,       "GB/month",   "(indexed_spans+custom_events) × 1.5 KB ÷ 1024²"),
             ("Indexed Span Percentage",       cx.indexed_pct_spans * 100,      "%",          "indexed_gb / ingested_gb"),
             ("Daily Ingested Spans",          cx.daily_spans_ingest_gb,        "GB/day",     "ingested_gb ÷ 30"),
+            ("  Monitoring (10%)",            cx.daily_spans_mon_gb,           "GB/day",     f"daily × {SPAN_TIER_MON}"),
+            ("  Compliance (90%)",            cx.daily_spans_comp_gb,          "GB/day",     f"daily × {SPAN_TIER_COMP}"),
             ("  Indexed (GB/day)",            cx.daily_spans_indexed_gb,       "GB/day",     "daily × indexed_pct"),
             ("  Archive (GB/day)",            cx.daily_spans_archive_gb,       "GB/day",     "daily - indexed_daily"),
         ]),
@@ -1396,6 +1407,8 @@ def generate_html(snap: UsageSnapshot, cx: CoralogixSizing) -> bytes:
         row("Indexed Spans",                 f"{cx.indexed_spans_gb_month:.4f} GB/month",        f"avg {AVG_SPAN_SIZE_KB} KB/span"),
         row("Indexed Span Percentage",       f"{cx.indexed_pct_spans*100:.4f}%",                 "", True),
         row("Daily Ingested Spans",          f"{cx.daily_spans_ingest_gb:.2f} GB/day",           "ingested ÷ 30"),
+        row("  → Monitoring (10%)",          f"{cx.daily_spans_mon_gb:.2f} GB/day",              "", True),
+        row("  → Compliance (90%)",          f"{cx.daily_spans_comp_gb:.2f} GB/day",             ""),
         row("  → Indexed",                   f"{cx.daily_spans_indexed_gb:.4f} GB/day",          "", True),
         row("  → Archive",                   f"{cx.daily_spans_archive_gb:.2f} GB/day",          ""),
     ])
@@ -1431,7 +1444,7 @@ def generate_html(snap: UsageSnapshot, cx: CoralogixSizing) -> bytes:
       <div class="tco-pill">Tracing</div>
       <div class="tco-val">{cx.daily_spans_ingest_gb:.2f}</div>
       <div class="tco-unit">GB / day</div>
-      <div class="tco-sub">ingested spans (Tracing Without Limits)</div>
+      <div class="tco-sub">→ Monitoring: {cx.daily_spans_mon_gb:.2f} GB/day<br>→ Compliance: {cx.daily_spans_comp_gb:.2f} GB/day</div>
     </div>
     <div class="tco-item">
       <div class="tco-pill">RUM — Sessions</div>
@@ -1677,6 +1690,7 @@ def generate_html(snap: UsageSnapshot, cx: CoralogixSizing) -> bytes:
       {row("TS-to-Units factor",             f"{TS_TO_UNITS}",              "Coralogix metrics conversion")}
       {row("Days per month",                 f"{int(DAYS_PER_MONTH)}",      "", True)}
       {row("Log tier split",                 f"{int(LOG_TIER_MON*100)}% Monitoring / {int(LOG_TIER_COMP*100)}% Compliance")}
+      {row("Span tier split",               f"{int(SPAN_TIER_MON*100)}% Monitoring / {int(SPAN_TIER_COMP*100)}% Compliance", "", True)}
     </tbody>
   </table></div>
 </section>
