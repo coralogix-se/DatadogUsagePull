@@ -1611,29 +1611,31 @@ def generate_html(
             for txt, col in [_classify(pct_key)]
         )
 
-        # Table: columns = Metric | Jan | Feb | Mar | Feb MoM | Mar MoM
+        # Table: Metric | Month1 value | Month2 value+MoM | Month3 value+MoM
         month_headers = "".join(f'<th class="num">{t["month"]}</th>' for t in trends)
-        mom_headers   = "".join(
-            f'<th class="num" style="color:rgba(255,255,255,.6);font-size:10px">vs {trends[i-1]["month"]}</th>'
-            for i in range(1, len(trends))
-        )
 
         trend_rows = ""
         for ri, (label, unit, val_key, pct_key, dec) in enumerate(rows_data):
             bg = "background:#F9F7FC;" if ri % 2 == 0 else ""
-            val_cells = "".join(
-                f'<td class="num" style="font-weight:700;color:{CX_PURPLE}">'
-                f'{_fv(t.get(val_key, 0), dec)}</td>'
-                for t in trends
-            )
-            mom_cells = ""
-            for i in range(1, len(trends)):
-                pct = trends[i].get(pct_key) if pct_key else None
-                mom_cells += f'<td class="num">{_trend_arrow(pct)}</td>'
+            val_cells = ""
+            for i, t in enumerate(trends):
+                val = _fv(t.get(val_key, 0), dec)
+                pct = t.get(pct_key) if (pct_key and i > 0) else None
+                pct_html = (
+                    f'<div style="font-size:11px;margin-top:3px">{_trend_arrow(pct)}</div>'
+                    if pct is not None else
+                    ('<div style="font-size:11px;margin-top:3px;color:#ccc">baseline</div>'
+                     if i == 0 and pct_key else "")
+                )
+                val_cells += (
+                    f'<td class="num" style="font-weight:700;color:{CX_PURPLE}">'
+                    f'{val}{pct_html}</td>'
+                )
             trend_rows += (
                 f'<tr style="{bg}">'
-                f'<td><strong>{label}</strong><small style="display:block;color:{CX_MUTED};font-size:10px">{unit}</small></td>'
-                f'{val_cells}{mom_cells}</tr>'
+                f'<td style="vertical-align:top"><strong>{label}</strong>'
+                f'<small style="display:block;color:{CX_MUTED};font-size:10px;margin-top:2px">{unit}</small></td>'
+                f'{val_cells}</tr>'
             )
 
         trend_section = f"""
@@ -1644,13 +1646,12 @@ def generate_html(
     <thead><tr>
       <th style="min-width:140px">Metric</th>
       {month_headers}
-      {mom_headers}
     </tr></thead>
     <tbody>{trend_rows}</tbody>
   </table></div>
   <p style="font-size:11px;color:{CX_MUTED};margin-top:10px">
     ▲ &gt;5% growth &nbsp;&bull;&nbsp; ▼ &gt;5% decline &nbsp;&bull;&nbsp; ≈ stable (±5%)
-    &nbsp;&bull;&nbsp; MoM = vs. prior month
+    &nbsp;&bull;&nbsp; % change shown below each value vs. prior month
   </p>
 </section>"""
 
