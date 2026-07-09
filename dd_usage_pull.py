@@ -13,9 +13,12 @@ Usage
 
 Environment variables (put these in a .env file next to the script):
     DD_API_KEY   Datadog API key          (needs usage_read)
-    DD_APP_KEY   Datadog Application key  (needs billing_read for cost data)
+    DD_APP_KEY   Datadog Application key  (needs usage_read)
     DD_SITE      datadoghq.com | datadoghq.eu | us3/us5.datadoghq.com  (default: datadoghq.com)
     DD_MONTH     YYYY-MM  (default: previous calendar month)
+
+This script collects usage volumes only (logs, metrics, traces, RUM, synthetics).
+It does NOT call Datadog cost or billing-dollar endpoints.
 """
 
 from __future__ import annotations
@@ -83,8 +86,7 @@ KNOWN_SITES: dict[str, str] = {
 }
 
 FRESHNESS_NOTE = (
-    "Datadog usage data may be delayed up to 72 hours. "
-    "Historical cost for a closed month becomes available by the 16th of the following month."
+    "Datadog usage data may be delayed up to 72 hours."
 )
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -119,7 +121,7 @@ class DatadogClient:
                 if resp.status_code == 403:
                     raise PermissionError(
                         f"403 Forbidden: {path}\n"
-                        "  Ensure the API key has usage_read and the App key has billing_read."
+                        "  Ensure the API and Application keys have usage_read."
                     )
                 if resp.status_code == 400:
                     raise ValueError(f"400 Bad Request: {path} — {resp.text[:300]}")
@@ -140,30 +142,6 @@ class DatadogClient:
         if end_month:
             p["end_month"] = end_month
         return self._get("/api/v1/usage/summary", p)
-
-    def billable_summary(self, month: str) -> dict:
-        return self._get("/api/v1/usage/billable-summary", {"month": month})
-
-    def estimated_cost(self, start_month: str, end_month: str | None = None) -> dict:
-        p: dict[str, str] = {"start_month": start_month}
-        if end_month:
-            p["end_month"] = end_month
-        return self._get("/api/v2/usage/estimated_cost", p)
-
-    def historical_cost(self, start_month: str, end_month: str | None = None) -> dict:
-        p: dict[str, str] = {"start_month": start_month, "view": "summary"}
-        if end_month:
-            p["end_month"] = end_month
-        return self._get("/api/v2/usage/historical_cost", p)
-
-    def projected_cost(self) -> dict:
-        return self._get("/api/v2/usage/projected_cost", {"view": "summary"})
-
-    def billing_dimension_mapping(self, month: str | None = None) -> dict:
-        p: dict[str, str] = {}
-        if month:
-            p["filter[month]"] = f"{month}-01T00:00:00Z"
-        return self._get("/api/v2/usage/billing_dimension_mapping", p)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -247,9 +225,6 @@ class UsageSnapshot:
     # ── Full API responses for raw JSON export ───────────────────────────────
     raw: dict = field(default_factory=dict)
 
-    # ── Per-dimension breakdown from billable-summary ────────────────────────
-    billable_breakdown: list[dict] = field(default_factory=list)
-
 
 @dataclass
 class CoralogixSizing:
@@ -315,7 +290,6 @@ def _f(item: dict, *keys: str) -> float:
 
 def extract_usage_snapshot(
     summary_raw: dict,
-    billable_raw: dict | None,
     month: str,
     site: str,
 ) -> UsageSnapshot:
@@ -616,88 +590,9 @@ def extract_usage_snapshot(
             "ai_credits_bits_sre_ai_credits_sum",
         )
 
-    # ── Billable summary overlay ─────────────────────────────────────────────
-    if billable_raw:
-        dim_map: dict[str, tuple[float, float, float, str]] = {}   # dim → (billable, committed, on_demand, unit)
-        breakdown: list[dict] = []
-        for entry in billable_raw.get("usage", []):
-            dim      = str(entry.get("billing_dimension", "")).lower()
-            billable = entry.get("account_billable_usage")
-            committed= entry.get("account_committed_usage")
-            on_demand= entry.get("account_on_demand_usage")
-            unit     = entry.get("usage_unit", "")
-            if billable is not None:
-                dim_map[dim] = (float(billable), float(committed or 0), float(on_demand or 0), unit)
-            breakdown.append({
-                "billing_dimension": entry.get("billing_dimension", ""),
-                "billable":   billable,
-                "committed":  committed,
-                "on_demand":  on_demand,
-                "unit":       unit,
-                "start_date": entry.get("start_date", ""),
-                "end_date":   entry.get("end_date", ""),
-            })
-        snap.billable_breakdown = breakdown
-
-        def bd(*dims: str) -> float:
-            for d in dims:
-                if d in dim_map:
-                    return dim_map[d][0]
-            return 0.0
-
-        # Override usage-summary values with cleaner billable-summary values
-        _infra = bd("infra_host", "infra_host_sum", "agent_host")
-        if _infra: snap.infra_hosts = _infra
-
-        _apm = bd("apm_host", "apm_host_sum")
-        if _apm: snap.apm_hosts = _apm
-
-        _cont = bd("container", "container_sum", "container_average", "containers")
-        if _cont: snap.containers = _cont
-
-        _cm = bd("custom_timeseries", "custom_metrics", "custom_ts")
-        if _cm: snap.custom_metrics = _cm
-
-        # For ingested logs the billable unit may be bytes or GB — trust usage-summary for bytes
-        _il = bd("ingested_logs", "ingested_logs_bytes")
-        if _il and snap.ingested_logs_bytes == 0:
-            snap.ingested_logs_bytes = _il
-
-        _is = bd("ingested_spans", "ingested_spans_bytes")
-        if _is and snap.ingested_spans_bytes == 0:
-            snap.ingested_spans_bytes = _is
-
-        _rum = bd("rum", "rum_session", "rum_browser_mobile_sessions", "rum_total_session")
-        if _rum: snap.rum_sessions = _rum
-
-        _replay = bd("rum_replay", "session_replay", "rum_replay_session_count")
-        if _replay:
-            snap.rum_replay = _replay
-            snap.session_replay = _replay
-
-        _sinv = bd("serverless_invocations", "serverless_invocation", "lambda_invocations")
-        if _sinv: snap.serverless_invocations = _sinv
-
-        _sfunc = bd("serverless_functions", "serverless_function", "serverless_func")
-        if _sfunc: snap.serverless_functions = _sfunc
-
-        # Indexed logs by retention tier from billable-summary
-        _3d  = bd("indexed_logs_3_day",  "indexed_logs_3day",  "logs_indexed_3day")
-        _7d  = bd("indexed_logs_7_day",  "indexed_logs_7day",  "logs_indexed_7day")
-        _15d = bd("indexed_logs_15_day", "indexed_logs_15day", "logs_indexed_15day")
-        _30d = bd("indexed_logs_30_day", "indexed_logs_30day", "logs_indexed_30day")
-        _90d = bd("indexed_logs_90_day", "indexed_logs_90day", "logs_indexed_90day")
-        if _3d:  snap.indexed_logs_3day  = _3d
-        if _7d:  snap.indexed_logs_7day  = _7d
-        if _15d: snap.indexed_logs_15day = _15d
-        if _30d: snap.indexed_logs_30day = _30d
-        if _90d: snap.indexed_logs_90day = _90d
-
-    # ── Cost data ────────────────────────────────────────────────────────────
     # ── Store raw for JSON export ────────────────────────────────────────────
     snap.raw = {
-        "usage_summary":    summary_raw,
-        "billable_summary": billable_raw or {},
+        "usage_summary": summary_raw,
     }
 
     return snap
@@ -823,9 +718,6 @@ def _bytes_to_tb(b: float) -> str:
 
 def _bytes_to_gb(b: float) -> str:
     return f"{b/1e9:.2f} GB"
-
-def _usd(n: float | None) -> str:
-    return "N/A" if n is None else f"${n:,.2f}"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1321,39 +1213,6 @@ def generate_xlsx(
             out_row += 1
         out_row += 1
 
-    # ════════════════════════════════════════════════════════════════════
-    # Sheet 3 — Billable Breakdown
-    # ════════════════════════════════════════════════════════════════════
-    if snap.billable_breakdown:
-        ws3 = wb.create_sheet("Billable Breakdown")
-        ws3.column_dimensions["A"].width = 35
-        ws3.column_dimensions["B"].width = 20
-        ws3.column_dimensions["C"].width = 20
-        ws3.column_dimensions["D"].width = 20
-        ws3.column_dimensions["E"].width = 20
-        ws3.column_dimensions["F"].width = 16
-
-        hdr_cell(ws3, 1, 1, "Billable Usage Breakdown by Dimension", bg=_GREEN, sz=12)
-        ws3.merge_cells("A1:F1")
-        hdr_cell(ws3, 2, 1, "Billing Dimension", bg=_DGRAY, sz=10)
-        hdr_cell(ws3, 2, 2, "Billable Usage",    bg=_DGRAY, sz=10)
-        hdr_cell(ws3, 2, 3, "Committed Usage",   bg=_DGRAY, sz=10)
-        hdr_cell(ws3, 2, 4, "On-Demand Usage",   bg=_DGRAY, sz=10)
-        hdr_cell(ws3, 2, 5, "Start Date",        bg=_DGRAY, sz=10)
-        hdr_cell(ws3, 2, 6, "Unit",              bg=_DGRAY, sz=10)
-
-        for i, row_data in enumerate(snap.billable_breakdown, start=3):
-            fill = PatternFill("solid", fgColor=_LGRAY) if i % 2 == 0 else None
-            for col, key in enumerate(
-                ["billing_dimension", "billable", "committed", "on_demand", "start_date", "unit"], start=1
-            ):
-                c = ws3.cell(row=i, column=col, value=row_data.get(key, ""))
-                c.font = Font(size=10)
-                if col > 1:
-                    c.alignment = Alignment(horizontal="right")
-                if fill:
-                    c.fill = fill
-
     # ── Trend sheet (when multiple months available) ──────────────────────
     if all_pairs and len(all_pairs) > 1:
         trends = compute_trends(all_pairs)
@@ -1434,7 +1293,7 @@ def generate_html(
     CX_SOFT    = "#F4F7F5"
     CX_WHITE   = "#FFFFFF"
     CX_GROW    = "#C0392B"   # growth = attention (red)
-    CX_DROP    = "#008F61"   # decline = good for cost (green)
+    CX_DROP    = "#008F61"   # decline indicator (green)
     CX_FLAT    = "#7A8694"
 
     def _fv(val: float, dec: int = 1) -> str:
@@ -1879,11 +1738,10 @@ def main() -> None:
 
     client = DatadogClient(api_key, app_key, site)
 
-    # ── Fetch all data (one API call covers the full range) ───────────────
-    summary_raw  = None
-    billable_raw = None
+    # ── Fetch usage data (single endpoint — volumes only, no cost/billing) ─
+    summary_raw = None
 
-    print(f"  [1/2] Fetching usage summary ({start_month} → {month}) …")
+    print(f"  Fetching usage summary ({start_month} → {month}) …")
     try:
         summary_raw = client.usage_summary(start_month, month)
         n_months_returned = len(summary_raw.get("usage", []))
@@ -1891,15 +1749,6 @@ def main() -> None:
     except Exception as exc:
         print(f"        WARN: {exc}")
         summary_raw = {}
-
-    print(f"  [2/2] Fetching billable usage summary ({month}) …")
-    try:
-        billable_raw = client.billable_summary(month)
-        print("        OK")
-    except PermissionError as exc:
-        print(f"        SKIP (billing_read not available): {exc}")
-    except Exception as exc:
-        print(f"        WARN: {exc}")
 
     # ── Process each month ────────────────────────────────────────────────
     print(f"\n  Processing {len(months)} months …")
@@ -1916,13 +1765,7 @@ def main() -> None:
             print(f"    {m}: no data returned — skipping")
             continue
         m_raw = {"usage": m_items}
-        # Billable summary only applies to the target (latest) month
-        snap = extract_usage_snapshot(
-            m_raw,
-            billable_raw if m == month else None,
-            m,
-            site,
-        )
+        snap = extract_usage_snapshot(m_raw, m, site)
         cx = compute_coralogix_sizing(snap)
         all_pairs.append((snap, cx))
         print(f"    {m}: ✓  logs={cx.daily_logs_gb:.1f} GB/day  "

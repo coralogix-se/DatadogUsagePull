@@ -22,7 +22,7 @@ datadog_coralogix_report_2026-01_to_2026-03.zip
 |---|---|
 | `datadog_raw_<range>.json` | Combined raw usage responses for all months in the window |
 | `datadog_usage_YYYY-MM.csv` | One CSV per month (Bill Overview + sizing + TCO/Checkly summaries) |
-| `coralogix_sizing_<range>.xlsx` | Excel workbook: Bill Overview, Coralogix sizing, billable breakdown, Trend Analysis sheet |
+| `coralogix_sizing_<range>.xlsx` | Excel workbook: Bill Overview, Coralogix sizing, Trend Analysis sheet |
 | `report_<range>.html` | Self-contained HTML report (open in any browser) |
 
 ### HTML report — what to enter where
@@ -57,7 +57,8 @@ The report also includes:
 - Python 3.9+
 - Datadog **API key** with `usage_read`
 - Datadog **Application key** with `usage_read`
-- Optional: `billing_read` on the App key for billable-summary enrichment
+
+No `billing_read` or cost endpoints are used. The script collects **usage volumes only** — not how much you pay Datadog.
 
 ---
 
@@ -97,8 +98,7 @@ Example output:
   Site    : datadoghq.com
   Range   : 2026-01 → 2026-03  (3 months)
 
-  [1/2] Fetching usage summary (2026-01 → 2026-03) …
-  [2/2] Fetching billable usage summary (2026-03) …
+  [1/1] Fetching usage summary (2026-04 → 2026-06) …
 
   Coralogix TCO Sizing — Latest Month: 2026-03
   Logs     : 11092.61 GB/day
@@ -132,12 +132,13 @@ Precedence: CLI flags → environment variables → `.env` file.
 
 ## Datadog API endpoints used
 
-Official [Usage Metering API](https://docs.datadoghq.com/api/latest/usage-metering/) only — no UI scraping.
+Official [Usage Metering API](https://docs.datadoghq.com/api/latest/usage-metering/) only — no UI scraping, no cost endpoints.
 
 | Endpoint | Purpose |
 |---|---|
-| `GET /api/v1/usage/summary` | Product usage for the full 3-month window |
-| `GET /api/v1/usage/billable-summary` | Optional billable overlay for the target month |
+| `GET /api/v1/usage/summary` | Product usage volumes for the 3-month window |
+
+The script does **not** call `estimated_cost`, `historical_cost`, `projected_cost`, or `billable-summary`.
 
 > Datadog usage data can lag up to ~72 hours.
 
@@ -213,7 +214,7 @@ browser_checks_day = synthetics_browser_test_runs / 30
 | `403 Forbidden` | Missing `usage_read` | Fix App/API key scopes |
 | `400 Bad Request` | Bad month format | Use `YYYY-MM` |
 | Metric shows 0 unexpectedly | Field name / free-tier null | Inspect `datadog_raw_*.json` in the ZIP |
-| Billable summary skipped | No `billing_read` | Optional — usage sizing still works |
+| Billable summary skipped | N/A — not collected | Script only uses usage/summary |
 | Month missing from window | No usage returned for that month | Check account activity / permissions |
 
 ---
@@ -222,6 +223,7 @@ browser_checks_day = synthetics_browser_test_runs / 30
 
 - [x] API key: `usage_read`
 - [x] App key: `usage_read`
-- [ ] App key: `billing_read` (optional, for billable-summary)
+
+`billing_read` is **not** required or used.
 
 For multi-org accounts, use a **parent organization** key if you need org-wide totals.
