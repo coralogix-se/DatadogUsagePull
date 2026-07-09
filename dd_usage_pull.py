@@ -37,18 +37,15 @@ from pathlib import Path
 from typing import Any
 
 # ── Dependency guards ──────────────────────────────────────────────────────
-def _import(mod: str, pkg: str) -> Any:
-    try:
-        import importlib
-        return importlib.import_module(mod)
-    except ImportError:
-        sys.exit(f"\n  Missing '{mod}'. Run:  pip install {pkg}\n")
+try:
+    import requests
+except ImportError:
+    sys.exit("\n  Missing 'requests'. Run:  pip install requests\n")
 
-requests_mod = _import("requests", "requests")
-dotenv_mod   = _import("dotenv",   "python-dotenv")
-
-import requests                           # noqa: E402  (already verified above)
-from dotenv import load_dotenv            # noqa: E402
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    sys.exit("\n  Missing 'python-dotenv'. Run:  pip install python-dotenv\n")
 
 try:
     import openpyxl
@@ -100,8 +97,12 @@ class DatadogClient:
     RETRY_WAIT_S  = 2  # exponential: 2, 4, 8 seconds
 
     def __init__(self, api_key: str, app_key: str, site: str = "datadoghq.com"):
-        base = KNOWN_SITES.get(site, f"https://api.{site}")
-        self.base_url = base.rstrip("/")
+        if site not in KNOWN_SITES:
+            sys.exit(
+                f"\n  Unknown Datadog site: '{site}'\n"
+                f"  Allowed values: {', '.join(KNOWN_SITES)}\n"
+            )
+        self.base_url = KNOWN_SITES[site]
         self.headers  = {
             "Accept":             "application/json",
             "DD-API-KEY":         api_key,
@@ -1422,7 +1423,7 @@ def generate_html(
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Datadog → Coralogix — {snap.month}</title>
 <style>
-@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&display=swap');
+/* DM Sans loaded from system/fallback stack — no external font request */
 *,*::before,*::after{{box-sizing:border-box;margin:0;padding:0}}
 body{{font-family:'DM Sans',system-ui,sans-serif;background:{CX_SOFT};color:{CX_INK};font-size:14px;line-height:1.5}}
 a{{color:{CX_GREEN_D}}}
