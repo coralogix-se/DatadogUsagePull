@@ -290,6 +290,12 @@ class CoralogixSizing:
     rum_session_recording_daily: float = 0
     rum_errors_per_day:          float = 0
 
+    # ── Synthetics → Checkly ────────────────────────────────────────────────
+    synthetics_api_daily:        float = 0
+    synthetics_browser_daily:    float = 0
+    synthetics_api_monthly:      float = 0
+    synthetics_browser_monthly:  float = 0
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # SECTION 4 — Extraction helpers
@@ -783,6 +789,12 @@ def compute_coralogix_sizing(snap: UsageSnapshot) -> CoralogixSizing:
     cx.rum_sessions_daily          = snap.rum_sessions / DAYS_PER_MONTH
     cx.rum_session_recording_daily = snap.session_replay / DAYS_PER_MONTH
     cx.rum_errors_per_day   = snap.rum_errors / DAYS_PER_MONTH
+
+    # ── Synthetics → Checkly ─────────────────────────────────────────────────
+    cx.synthetics_api_monthly     = snap.synthetics_api
+    cx.synthetics_browser_monthly = snap.synthetics_browser
+    cx.synthetics_api_daily       = snap.synthetics_api / DAYS_PER_MONTH
+    cx.synthetics_browser_daily   = snap.synthetics_browser / DAYS_PER_MONTH
 
     return cx
 
@@ -1533,6 +1545,10 @@ def generate_html(
         ("Session Replay",  _fmt(snap.rum_replay),   ""),
         ("Errors",          _fmt(snap.rum_errors),   ""),
     ])
+    synth = _tile_row([
+        ("API Test Runs",     _fmt(snap.synthetics_api, 0),     "monthly"),
+        ("Browser Test Runs", _fmt(snap.synthetics_browser, 0), "monthly"),
+    ])
 
     html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -1558,7 +1574,7 @@ a{{color:{CX_GREEN_D}}}
 .action-h{{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-bottom:16px;flex-wrap:wrap}}
 .action-h h2{{font-size:13px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;color:{CX_GREEN_D}}}
 .action-h p{{font-size:12px;color:{CX_MUTED}}}
-.kpis{{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px}}
+.kpis{{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px}}
 @media(max-width:900px){{.kpis{{grid-template-columns:repeat(2,minmax(0,1fr))}}}}
 .kpi{{background:{CX_SOFT};border:1px solid {CX_LINE};border-radius:10px;padding:14px 14px 12px}}
 .kpi .l{{font-size:11px;font-weight:700;color:{CX_GREEN_D};text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px}}
@@ -1647,6 +1663,27 @@ tr:last-child td{{border-bottom:none}}
   </div>
 </section>
 
+<section class="action" style="margin-top:14px">
+  <div class="action-h">
+    <h2>Enter these in Checkly</h2>
+    <p>Datadog Synthetics → Checkly sizing for {snap.month}</p>
+  </div>
+  <div class="kpis">
+    <div class="kpi">
+      <div class="l">API checks</div>
+      <div class="v">{cx.synthetics_api_daily:,.0f}</div>
+      <div class="u">test runs / day</div>
+      <div class="d">{cx.synthetics_api_monthly:,.0f} / month</div>
+    </div>
+    <div class="kpi">
+      <div class="l">Browser checks</div>
+      <div class="v">{cx.synthetics_browser_daily:,.0f}</div>
+      <div class="u">test runs / day</div>
+      <div class="d">{cx.synthetics_browser_monthly:,.0f} / month</div>
+    </div>
+  </div>
+</section>
+
 {trend_html}
 
 <section class="panel">
@@ -1664,6 +1701,23 @@ tr:last-child td{{border-bottom:none}}
 <section class="panel">
   <div class="panel-h"><h2>Datadog source — RUM</h2></div>
   <div class="srcs">{rum}</div>
+</section>
+<section class="panel">
+  <div class="panel-h"><h2>Datadog source — Synthetics (→ Checkly)</h2></div>
+  <div class="srcs">{synth}</div>
+</section>
+
+<section class="panel">
+  <div class="panel-h"><h2>Sizing detail — Synthetics → Checkly</h2></div>
+  <table class="detail">
+    <thead><tr><th>Metric</th><th>Value</th><th>Note</th></tr></thead>
+    <tbody>
+      {_drow("API checks / day",     f"{cx.synthetics_api_daily:,.0f}",     "÷ 30")}
+      {_drow("API checks / month",   f"{cx.synthetics_api_monthly:,.0f}")}
+      {_drow("Browser checks / day", f"{cx.synthetics_browser_daily:,.0f}", "÷ 30")}
+      {_drow("Browser checks / month", f"{cx.synthetics_browser_monthly:,.0f}")}
+    </tbody>
+  </table>
 </section>
 
 <section class="panel">
@@ -1897,6 +1951,7 @@ def main() -> None:
     print(f"  Metrics  : {cx.total_ts:,.0f} NumSeries")
     print(f"  Tracing  : {cx.daily_spans_ingest_gb:.2f} GB/day")
     print(f"  RUM      : {cx.rum_sessions_daily:,.0f} sessions/day  |  {cx.rum_session_recording_daily:,.0f} recordings/day")
+    print(f"  Checkly  : {cx.synthetics_api_daily:,.0f} API/day  |  {cx.synthetics_browser_daily:,.0f} browser/day")
     if len(all_pairs) > 1:
         print(f"\n  Month-over-Month Trends (last → current):")
         last_t = trends[-1]
