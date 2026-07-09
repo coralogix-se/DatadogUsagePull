@@ -69,9 +69,8 @@ TS_TO_UNITS      = 3.3e-5  # Coralogix metrics: TimeSeries → Units/day convers
 DAYS_PER_MONTH   = 30.0    # used for all monthly → daily conversions
 HOURS_PER_MONTH  = 30.0 * 24  # 720 — Datadog _sum fields for hosts/containers are in host-hours
 SW_LABEL_FACTOR  = 0.30    # serverless TS = invocations × 3 labels × 10% unique = ×0.30
-LOG_TIER_FS      = 0.50    # Frequent Search share of ingested logs
-LOG_TIER_MON     = 0.40    # Monitoring share
-LOG_TIER_COMP    = 0.10    # Compliance share
+LOG_TIER_MON     = 0.70    # Monitoring share of ingested logs
+LOG_TIER_COMP    = 0.30    # Compliance share
 
 KNOWN_SITES: dict[str, str] = {
     "datadoghq.com":     "https://api.datadoghq.com",
@@ -264,7 +263,7 @@ class CoralogixSizing:
     indexed_logs_size_gb_month:    float = 0
     indexed_pct_logs:              float = 0
     daily_logs_gb:                 float = 0
-    daily_logs_fs_gb:              float = 0   # Frequent Search (50 %)
+    daily_logs_fs_gb:              float = 0   # unused, kept for compat
     daily_logs_mon_gb:             float = 0   # Monitoring       (40 %)
     daily_logs_comp_gb:            float = 0   # Compliance       (10 %)
 
@@ -768,7 +767,6 @@ def compute_coralogix_sizing(snap: UsageSnapshot) -> CoralogixSizing:
         cx.indexed_pct_logs = cx.indexed_logs_size_gb_month / cx.total_ingested_logs_gb_month
 
     cx.daily_logs_gb      = cx.total_ingested_logs_gb_month / DAYS_PER_MONTH
-    cx.daily_logs_fs_gb   = cx.daily_logs_gb * LOG_TIER_FS
     cx.daily_logs_mon_gb  = cx.daily_logs_gb * LOG_TIER_MON
     cx.daily_logs_comp_gb = cx.daily_logs_gb * LOG_TIER_COMP
 
@@ -934,9 +932,8 @@ def generate_csv(snap: UsageSnapshot, cx: CoralogixSizing) -> bytes:
     w.writerow(["Total Indexed Logs Size (GB/month)", f"{cx.indexed_logs_size_gb_month:.2f}"])
     w.writerow(["Indexed Percentage",               f"{cx.indexed_pct_logs*100:.2f}%"])
     w.writerow(["Daily Ingested Logs (GB/day)",     f"{cx.daily_logs_gb:.2f}"])
-    w.writerow(["  Frequent Search 50% (GB/day)",   f"{cx.daily_logs_fs_gb:.2f}"])
-    w.writerow(["  Monitoring 40% (GB/day)",        f"{cx.daily_logs_mon_gb:.2f}"])
-    w.writerow(["  Compliance 10% (GB/day)",        f"{cx.daily_logs_comp_gb:.2f}"])
+    w.writerow(["  Monitoring 70% (GB/day)",        f"{cx.daily_logs_mon_gb:.2f}"])
+    w.writerow(["  Compliance 30% (GB/day)",        f"{cx.daily_logs_comp_gb:.2f}"])
     w.writerow([])
 
     w.writerow(["-- Metrics --"])
@@ -1162,7 +1159,7 @@ def generate_xlsx(snap: UsageSnapshot, cx: CoralogixSizing) -> bytes | None:
         ("Time series per host/container", TS_PER_HOST, "TS"),
         ("TS-to-Units factor (metrics)",   TS_TO_UNITS, "Units/TS"),
         ("Days per month",    DAYS_PER_MONTH, "days"),
-        ("Log tier split",    f"{int(LOG_TIER_FS*100)}% FS / {int(LOG_TIER_MON*100)}% Mon / {int(LOG_TIER_COMP*100)}% Comp", ""),
+        ("Log tier split",    f"{int(LOG_TIER_MON*100)}% Mon / {int(LOG_TIER_COMP*100)}% Comp", ""),
     ]
     for i, (label, val, unit) in enumerate(assumptions, start=5):
         ws2.cell(row=i, column=1, value=label).font = Font(size=10)
@@ -1221,9 +1218,8 @@ def generate_xlsx(snap: UsageSnapshot, cx: CoralogixSizing) -> bytes | None:
             ("Total Indexed Logs Size",       cx.indexed_logs_size_gb_month,   "GB/month",   "count × avg_log_size_kb × 1024 ÷ 1024³"),
             ("Indexed Percentage",            cx.indexed_pct_logs * 100,       "%",          "indexed_size_gb / ingested_gb"),
             ("Daily Ingested Logs",           cx.daily_logs_gb,                "GB/day",     "ingested_gb ÷ 30"),
-            ("  Frequent Search (50%)",       cx.daily_logs_fs_gb,             "GB/day",     "daily × 0.50"),
-            ("  Monitoring (40%)",            cx.daily_logs_mon_gb,            "GB/day",     "daily × 0.40"),
-            ("  Compliance (10%)",            cx.daily_logs_comp_gb,           "GB/day",     "daily × 0.10"),
+            ("  Monitoring (70%)",            cx.daily_logs_mon_gb,            "GB/day",     "daily × 0.70"),
+            ("  Compliance (30%)",            cx.daily_logs_comp_gb,           "GB/day",     "daily × 0.30"),
         ]),
         ("METRICS", _ORANGE, [
             ("Host Count (all types incl. fargate)", cx.host_count,         "hosts",       "infra+apm+profiled+fargate types"),
@@ -1408,9 +1404,8 @@ def generate_html(snap: UsageSnapshot, cx: CoralogixSizing) -> bytes:
         row("Indexed Logs Size",             f"{cx.indexed_logs_size_gb_month:.2f} GB/month",    f"avg {AVG_LOG_SIZE_KB} KB/log", True),
         row("Indexed Percentage",            f"{cx.indexed_pct_logs*100:.2f}%",                  "indexed size / ingested"),
         row("Daily Ingested Logs",           f"{cx.daily_logs_gb:.2f} GB/day",                   "ingested ÷ 30", True),
-        row("  → Frequent Search (50%)",     f"{cx.daily_logs_fs_gb:.2f} GB/day",                ""),
-        row("  → Monitoring (40%)",          f"{cx.daily_logs_mon_gb:.2f} GB/day",               "", True),
-        row("  → Compliance (10%)",          f"{cx.daily_logs_comp_gb:.2f} GB/day",              ""),
+        row("  → Monitoring (70%)",          f"{cx.daily_logs_mon_gb:.2f} GB/day",               "", True),
+        row("  → Compliance (30%)",          f"{cx.daily_logs_comp_gb:.2f} GB/day",              ""),
     ])
     cx_rows_metrics = "".join([
         row("Host Count (all types)",        f"{cx.host_count:,.0f}",                            "infra+apm+profiled+fargate", True),
@@ -1600,7 +1595,7 @@ def generate_html(snap: UsageSnapshot, cx: CoralogixSizing) -> bytes:
       {row("Time series per host/container",f"{TS_PER_HOST}",              "TS", True)}
       {row("TS-to-Units factor",            f"{TS_TO_UNITS}",              "Coralogix metrics conversion")}
       {row("Days per month",                f"{int(DAYS_PER_MONTH)}",      "", True)}
-      {row("Log tier split",f"{int(LOG_TIER_FS*100)}% FS / {int(LOG_TIER_MON*100)}% Mon / {int(LOG_TIER_COMP*100)}% Comp")}
+      {row("Log tier split",f"{int(LOG_TIER_MON*100)}% Mon / {int(LOG_TIER_COMP*100)}% Comp")}
     </tbody>
   </table>
 </section>
