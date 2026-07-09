@@ -1572,70 +1572,85 @@ def generate_html(
     # ── Multi-month trend section ─────────────────────────────────────────
     trend_section = ""
     if trends and len(trends) > 1:
-        def _td_pct(pct):
-            return f'<td class="num">{_trend_arrow(pct)}</td>'
 
-        header_months = "".join(f"<th>{t['month']}</th>" for t in trends)
-        # helper: format value or em-dash
-        def _v(val, fmt=".2f"):
-            return f"{val:{fmt}}" if val else "—"
+        def _fv(val: float, decimals: int = 1) -> str:
+            """Format a metric value with commas and controlled decimals."""
+            if not val:
+                return "—"
+            if decimals == 0:
+                return f"{val:,.0f}"
+            return f"{val:,.{decimals}f}"
 
         rows_data = [
-            ("Logs",         "GB/day",      [t["logs_gb_day"]    for t in trends], [t["logs_pct"]    for t in trends]),
-            ("Metrics",      "NumSeries",   [t["metrics_ts"]     for t in trends], [t["metrics_pct"] for t in trends]),
-            ("Tracing",      "GB/day",      [t["tracing_gb_day"] for t in trends], [t["tracing_pct"] for t in trends]),
-            ("RUM Sessions", "sessions/day",[t["rum_day"]        for t in trends], [t["rum_pct"]     for t in trends]),
+            ("Logs",           "GB / day",       "logs_gb_day",    "logs_pct",    1),
+            ("Metrics",        "NumSeries",       "metrics_ts",     "metrics_pct", 0),
+            ("Tracing",        "GB / day",        "tracing_gb_day", "tracing_pct", 1),
+            ("RUM Sessions",   "sessions / day",  "rum_day",        "rum_pct",     0),
+            ("RUM Recordings", "recordings / day","rum_rec_day",    None,          0),
         ]
 
-        trend_rows = ""
-        for label, unit, vals, pcts in rows_data:
-            val_cells  = "".join(f'<td class="num">{_v(v)}</td>' for v in vals)
-            pct_cells  = "".join(_td_pct(p) for p in pcts)
-            trend_rows += f"<tr><td><strong>{label}</strong><br><small>{unit}</small></td>{val_cells}{pct_cells}</tr>"
-
-        # Growth classification across the full window
-        def _classify(pcts):
-            valid = [p for p in pcts if p is not None]
-            if not valid:
+        # Growth classification (across all MoM deltas in window)
+        def _classify(pct_key):
+            pcts = [t[pct_key] for t in trends[1:] if t.get(pct_key) is not None]
+            if not pcts:
                 return ("—", "#aaa")
-            avg = sum(valid) / len(valid)
-            if avg > 10:    return ("Growing rapidly ▲", "#e04b2a")
-            if avg > 2:     return ("Growing ↑",         "#f59e0b")
-            if avg < -10:   return ("Declining rapidly ▼","#22a06b")
-            if avg < -2:    return ("Declining ↓",        "#22a06b")
+            avg = sum(pcts) / len(pcts)
+            if avg > 10:  return ("Growing rapidly ▲", "#e04b2a")
+            if avg > 2:   return ("Growing ↑",          "#f59e0b")
+            if avg < -10: return ("Shrinking ▼",        "#22a06b")
+            if avg < -2:  return ("Declining ↓",        "#22a06b")
             return ("Stable ≈", "#888")
 
-        classifications = {
-            label: _classify(pcts)
-            for label, _, _, pcts in rows_data
-        }
         classification_html = "".join(
-            f'<div class="cls-item"><span class="cls-label">{lbl}</span>'
-            f'<span class="cls-badge" style="color:{col};border-color:{col}">{txt}</span></div>'
-            for lbl, (txt, col) in classifications.items()
+            f'<div class="cls-item">'
+            f'<span class="cls-label">{label}</span>'
+            f'<span class="cls-badge" style="color:{col};border-color:{col}">{txt}</span>'
+            f'</div>'
+            for label, _, _, pct_key, _ in rows_data
+            if pct_key
+            for txt, col in [_classify(pct_key)]
         )
 
-        pct_headers = "".join(
-            f"<th>MoM {t['month']}</th>" for t in trends[1:]
-        ) if len(trends) > 1 else ""
+        # Table: columns = Metric | Jan | Feb | Mar | Feb MoM | Mar MoM
+        month_headers = "".join(f'<th class="num">{t["month"]}</th>' for t in trends)
+        mom_headers   = "".join(
+            f'<th class="num" style="color:rgba(255,255,255,.6);font-size:10px">vs {trends[i-1]["month"]}</th>'
+            for i in range(1, len(trends))
+        )
+
+        trend_rows = ""
+        for ri, (label, unit, val_key, pct_key, dec) in enumerate(rows_data):
+            bg = "background:#F9F7FC;" if ri % 2 == 0 else ""
+            val_cells = "".join(
+                f'<td class="num" style="font-weight:700;color:{CX_PURPLE}">'
+                f'{_fv(t.get(val_key, 0), dec)}</td>'
+                for t in trends
+            )
+            mom_cells = ""
+            for i in range(1, len(trends)):
+                pct = trends[i].get(pct_key) if pct_key else None
+                mom_cells += f'<td class="num">{_trend_arrow(pct)}</td>'
+            trend_rows += (
+                f'<tr style="{bg}">'
+                f'<td><strong>{label}</strong><small style="display:block;color:{CX_MUTED};font-size:10px">{unit}</small></td>'
+                f'{val_cells}{mom_cells}</tr>'
+            )
 
         trend_section = f"""
 <section>
-  {section_h2(f"Trend Analysis — {trends[0]['month']} → {trends[-1]['month']}", "#4A2C6E")}
-  <div class="cls-row">{classification_html}</div>
-  <div class="table-wrap" style="margin-top:14px"><table>
-    <thead>
-      <tr>
-        <th>Metric</th>
-        {header_months}
-        {pct_headers}
-      </tr>
-    </thead>
+  {section_h2(f"Trend Analysis — {trends[0]['month']} to {trends[-1]['month']}", "#4A2C6E")}
+  <div class="cls-row" style="margin-bottom:16px">{classification_html}</div>
+  <div class="table-wrap"><table>
+    <thead><tr>
+      <th style="min-width:140px">Metric</th>
+      {month_headers}
+      {mom_headers}
+    </tr></thead>
     <tbody>{trend_rows}</tbody>
   </table></div>
-  <p style="font-size:11px;color:{CX_MUTED};margin-top:8px">
-    ▲ &gt;5% growth &nbsp;|&nbsp; ▼ &gt;5% decline &nbsp;|&nbsp; ≈ stable (&lt;±5%)
-    &nbsp;|&nbsp; MoM = month-over-month % change vs. prior month
+  <p style="font-size:11px;color:{CX_MUTED};margin-top:10px">
+    ▲ &gt;5% growth &nbsp;&bull;&nbsp; ▼ &gt;5% decline &nbsp;&bull;&nbsp; ≈ stable (±5%)
+    &nbsp;&bull;&nbsp; MoM = vs. prior month
   </p>
 </section>"""
 
