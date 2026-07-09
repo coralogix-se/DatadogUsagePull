@@ -1003,13 +1003,14 @@ def generate_xlsx(
     wb = openpyxl.Workbook()
 
     # ── Helper styles ─────────────────────────────────────────────────────
-    _PURPLE  = "632CA6"
-    _ORANGE  = "FF5C35"
+    _GREEN   = "008F61"
+    _GREEN_L = "00B37A"
+    _INK     = "1A2332"
     _LGRAY   = "F5F5F5"
     _DGRAY   = "3C3C3C"
     _WHITE   = "FFFFFF"
 
-    def hdr_cell(ws, row, col, value, bg=_PURPLE, fg=_WHITE, bold=True, sz=11):
+    def hdr_cell(ws, row, col, value, bg=_GREEN, fg=_WHITE, bold=True, sz=11):
         c = ws.cell(row=row, column=col, value=value)
         c.font = Font(bold=bold, color=fg, size=sz)
         c.fill = PatternFill("solid", fgColor=bg)
@@ -1042,7 +1043,7 @@ def generate_xlsx(
     ws1.column_dimensions["D"].width = 22
     ws1.row_dimensions[1].height = 28
 
-    hdr_cell(ws1, 1, 1, f"Datadog Bill Overview — {snap.month}", bg=_PURPLE, sz=13)
+    hdr_cell(ws1, 1, 1, f"Datadog Bill Overview — {snap.month}", bg=_GREEN, sz=13)
     ws1.merge_cells("A1:D1")
     ws1.cell(row=2, column=1, value=f"Account: {snap.account_name or 'N/A'}  |  Site: {snap.site}  |  Pulled: {snap.pulled_at[:10]}")
     ws1.merge_cells("A2:D2")
@@ -1124,7 +1125,7 @@ def generate_xlsx(
         if name in section_headers:
             c = ws1.cell(row=row, column=1, value=name)
             c.font = Font(bold=True, size=10, color=_WHITE)
-            c.fill = PatternFill("solid", fgColor=_ORANGE)
+            c.fill = PatternFill("solid", fgColor=_GREEN_L)
             ws1.merge_cells(f"A{row}:D{row}")
         elif name == "":
             pass
@@ -1162,7 +1163,7 @@ def generate_xlsx(
     ws2.column_dimensions["D"].width = 36
     ws2.row_dimensions[1].height = 28
 
-    hdr_cell(ws2, 1, 1, f"Coralogix Sizing Estimate — {snap.month}", bg=_ORANGE, sz=13)
+    hdr_cell(ws2, 1, 1, f"Coralogix Sizing Estimate — {snap.month}", bg=_GREEN_L, sz=13)
     ws2.merge_cells("A1:D1")
     ws2.cell(row=2, column=1, value=f"Based on Datadog usage for {snap.account_name or 'account'}. "
              "All assumptions are listed below and can be adjusted.")
@@ -1231,7 +1232,7 @@ def generate_xlsx(
     out_row = 14 + len(dd_inputs) + 2
 
     sections = [
-        ("LOGS", _ORANGE, [
+        ("LOGS", _GREEN_L, [
             ("Total Ingested Logs",           cx.total_ingested_logs_gb_month, "GB/month",   "ingested_logs_gb + security_logs_gb"),
             ("Total Indexed Logs (events)",   cx.total_indexed_logs_count,     "events/month","all retention tiers summed"),
             ("Total Indexed Logs Size",       cx.indexed_logs_size_gb_month,   "GB/month",   "count × avg_log_size_kb × 1024 ÷ 1024³"),
@@ -1240,7 +1241,7 @@ def generate_xlsx(
             ("  Monitoring (70%)",            cx.daily_logs_mon_gb,            "GB/day",     "daily × 0.70"),
             ("  Compliance (30%)",            cx.daily_logs_comp_gb,           "GB/day",     "daily × 0.30"),
         ]),
-        ("METRICS", _ORANGE, [
+        ("METRICS", _GREEN_L, [
             ("Host Count (all types incl. fargate)", cx.host_count,         "hosts",       "infra+apm+profiled+fargate types"),
             ("Container Count",               cx.container_count,              "containers", "containers + profiled_containers"),
             ("Host+Container TS",             cx.host_container_ts,            "NumSeries",  "(hosts+containers) × 750"),
@@ -1249,7 +1250,7 @@ def generate_xlsx(
             ("Total TimeSeries (NumSeries)",  cx.total_ts,                     "NumSeries",  "host_cont_ts + custom_metrics + sw_ts"),
             ("Metrics Units / Day",           cx.metrics_units_per_day,        "Units/day",  "total_ts × 3.3e-5"),
         ]),
-        ("TRACING", _ORANGE, [
+        ("TRACING", _GREEN_L, [
             ("Ingested Spans",                cx.ingested_spans_gb_month,      "GB/month",   "twol_ingested_events_bytes_sum ÷ 1e9"),
             ("Indexed Spans",                 cx.indexed_spans_gb_month,       "GB/month",   "(indexed_spans+custom_events) × 1.5 KB ÷ 1024²"),
             ("Indexed Span Percentage",       cx.indexed_pct_spans * 100,      "%",          "indexed_gb / ingested_gb"),
@@ -1259,13 +1260,13 @@ def generate_xlsx(
             ("  Indexed (GB/day)",            cx.daily_spans_indexed_gb,       "GB/day",     "daily × indexed_pct"),
             ("  Archive (GB/day)",            cx.daily_spans_archive_gb,       "GB/day",     "daily - indexed_daily"),
         ]),
-        ("RUM", _ORANGE, [
+        ("RUM", _GREEN_L, [
             ("RUM Sessions / Month",              cx.rum_sessions_monthly,         "sessions",   "rum_total_session_count"),
             ("Total Sessions / Day",              cx.rum_sessions_daily,           "sessions/day", "monthly ÷ 30"),
             ("Session Recording / Day (Replay)",  cx.rum_session_recording_daily,  "sessions/day", "replay ÷ 30"),
             ("RUM Errors / Day",              cx.rum_errors_per_day,           "events/day", "error_tracking_events ÷ 30"),
         ]),
-        ("SUMMARY — Apply to Coralogix TCO Calculator", _PURPLE, [
+        ("SUMMARY — Apply to Coralogix TCO Calculator", _GREEN, [
             ("Logs GB/day",                   cx.daily_logs_gb,                "GB/day",     ""),
             ("Metrics NumSeries",             cx.total_ts,                     "NumSeries",  ""),
             ("Tracing GB/day",                cx.daily_spans_ingest_gb,        "GB/day",     ""),
@@ -1314,7 +1315,7 @@ def generate_xlsx(
         ws3.column_dimensions["E"].width = 20
         ws3.column_dimensions["F"].width = 16
 
-        hdr_cell(ws3, 1, 1, "Billable Usage Breakdown by Dimension", bg=_PURPLE, sz=12)
+        hdr_cell(ws3, 1, 1, "Billable Usage Breakdown by Dimension", bg=_GREEN, sz=12)
         ws3.merge_cells("A1:F1")
         hdr_cell(ws3, 2, 1, "Billing Dimension", bg=_DGRAY, sz=10)
         hdr_cell(ws3, 2, 2, "Billable Usage",    bg=_DGRAY, sz=10)
@@ -1345,7 +1346,7 @@ def generate_xlsx(
             ws4.column_dimensions[chr(67 + col_i * 2)].width = 12
 
         # Header
-        hdr_cell(ws4, 1, 1, "Trend Analysis — TCO Metrics", bg=_PURPLE, sz=13)
+        hdr_cell(ws4, 1, 1, "Trend Analysis — TCO Metrics", bg=_GREEN, sz=13)
         ws4.merge_cells(f"A1:{chr(65 + len(trends)*2)}1")
 
         # Month headers
@@ -1353,7 +1354,7 @@ def generate_xlsx(
         for i, t in enumerate(trends):
             c = ws4.cell(row=2, column=2 + i * 2, value=t["month"])
             c.font = Font(bold=True, color=_WHITE, size=10)
-            c.fill = PatternFill("solid", fgColor=_ORANGE)
+            c.fill = PatternFill("solid", fgColor=_GREEN_L)
             c.alignment = Alignment(horizontal="center")
             if i > 0:
                 mc = ws4.cell(row=2, column=3 + i * 2 - 2 + 1, value="MoM %")
@@ -1404,109 +1405,154 @@ def generate_html(
     all_pairs: list[tuple["UsageSnapshot", "CoralogixSizing"]] | None = None,
     trends: list[dict] | None = None,
 ) -> bytes:
+    """Light-theme HTML report using Coralogix green brand colours."""
+
+    # Coralogix brand: green primary, not orange
+    CX_GREEN   = "#00B37A"
+    CX_GREEN_D = "#008F61"
+    CX_INK     = "#1A2332"
+    CX_MUTED   = "#5B6B7C"
+    CX_LINE    = "#E3E8EE"
+    CX_SOFT    = "#F4F7F5"
+    CX_WHITE   = "#FFFFFF"
+    CX_GROW    = "#C0392B"   # growth = attention (red)
+    CX_DROP    = "#008F61"   # decline = good for cost (green)
+    CX_FLAT    = "#7A8694"
 
     def _fv(val: float, dec: int = 1) -> str:
-        if not val: return "—"
+        if not val:
+            return "—"
         return f"{val:,.{dec}f}" if dec else f"{val:,.0f}"
 
-    # ── Trend rows (reused in two places) ────────────────────────────────
+    def _drow(label: str, val: str, note: str = "") -> str:
+        return (f'<tr><td>{label}</td><td class="r">{val}</td>'
+                f'<td class="note">{note}</td></tr>')
+
+    def _tile_row(items: list[tuple[str, str, str]]) -> str:
+        out = ""
+        for label, val, sub in items:
+            if val in ("0", "0.0", "—", "0.00"):
+                continue
+            out += (
+                f'<div class="src">'
+                f'<div class="src-l">{label}</div>'
+                f'<div class="src-v">{val}</div>'
+                f'{f"<div class=src-s>{sub}</div>" if sub else ""}'
+                f'</div>'
+            )
+        return out
+
+    # ── Trend section ─────────────────────────────────────────────────────
     trend_metrics = [
-        ("Logs",           "GB/day",       "logs_gb_day",    "logs_pct",    1),
-        ("Metrics",        "NumSeries",    "metrics_ts",     "metrics_pct", 0),
-        ("Tracing",        "GB/day",       "tracing_gb_day", "tracing_pct", 1),
-        ("RUM Sessions",   "sess/day",     "rum_day",        "rum_pct",     0),
-        ("RUM Recordings", "rec/day",      "rum_rec_day",    None,          0),
+        ("Logs",           "GB/day",    "logs_gb_day",    "logs_pct",    1),
+        ("Metrics",        "NumSeries", "metrics_ts",     "metrics_pct", 0),
+        ("Tracing",        "GB/day",    "tracing_gb_day", "tracing_pct", 1),
+        ("RUM Sessions",   "sess/day",  "rum_day",        "rum_pct",     0),
+        ("RUM Recordings", "rec/day",   "rum_rec_day",    None,          0),
     ]
 
-    def _classify(pct_key):
-        if not trends: return ("—", "#999")
+    def _classify(pct_key: str | None):
+        if not trends or not pct_key:
+            return ("—", CX_FLAT)
         pcts = [t[pct_key] for t in trends[1:] if t.get(pct_key) is not None]
-        if not pcts: return ("—", "#999")
+        if not pcts:
+            return ("—", CX_FLAT)
         avg = sum(pcts) / len(pcts)
-        if avg > 10:  return ("▲ Fast growth",  "#C0392B")
-        if avg > 2:   return ("↑ Growing",       "#E67E22")
-        if avg < -10: return ("▼ Fast decline",  "#27AE60")
-        if avg < -2:  return ("↓ Declining",     "#27AE60")
-        return ("≈ Stable", "#7F8C8D")
+        if avg > 10:  return ("Fast growth", CX_GROW)
+        if avg > 2:   return ("Growing",     "#D97706")
+        if avg < -10: return ("Fast decline", CX_DROP)
+        if avg < -2:  return ("Declining",   CX_DROP)
+        return ("Stable", CX_FLAT)
 
-    trend_table_html = ""
+    trend_html = ""
     if trends and len(trends) > 1:
-        rows_html = ""
-        for ri, (label, unit, vk, pk, dec) in enumerate(trend_metrics):
-            cls_txt, cls_col = _classify(pk) if pk else ("—", "#999")
+        rows = ""
+        for label, unit, vk, pk, dec in trend_metrics:
+            cls_txt, cls_col = _classify(pk)
             cells = ""
             for i, t in enumerate(trends):
                 v = _fv(t.get(vk, 0), dec)
                 pct = t.get(pk) if (pk and i > 0) else None
-                if pct is not None:
-                    if pct > 5:   pct_s = f'<span class="chg up">{pct:+.1f}%</span>'
-                    elif pct < -5: pct_s = f'<span class="chg dn">{pct:+.1f}%</span>'
-                    else:          pct_s = f'<span class="chg flat">{pct:+.1f}%</span>'
-                else:
+                if pct is None:
                     pct_s = ""
+                elif pct > 5:
+                    pct_s = f'<span class="chg up">{pct:+.1f}%</span>'
+                elif pct < -5:
+                    pct_s = f'<span class="chg dn">{pct:+.1f}%</span>'
+                else:
+                    pct_s = f'<span class="chg flat">{pct:+.1f}%</span>'
                 cells += f'<td class="r">{v}{pct_s}</td>'
-            badge = (f'<span class="trend-badge" style="color:{cls_col};'
-                     f'border-color:{cls_col}">{cls_txt}</span>') if pk else ""
-            rows_html += (
-                f'<tr><td class="metric-cell">{label}'
-                f'<span class="unit">{unit}</span>{badge}</td>{cells}</tr>'
+            badge = (
+                f'<span class="badge" style="color:{cls_col};border-color:{cls_col}">'
+                f'{cls_txt}</span>'
+            ) if pk else ""
+            rows += (
+                f'<tr><td class="m">{label}'
+                f'<span class="u">{unit}</span>{badge}</td>{cells}</tr>'
             )
         month_ths = "".join(f"<th>{t['month']}</th>" for t in trends)
-        trend_table_html = f"""
-    <div class="card" style="margin-top:28px">
-      <div class="card-title">Growth Trend — {trends[0]['month']} to {trends[-1]['month']}</div>
-      <table class="trend-tbl">
-        <thead><tr><th></th>{month_ths}</tr></thead>
-        <tbody>{rows_html}</tbody>
-      </table>
-    </div>"""
+        insight_bits = []
+        for label, _, _, pk, _ in trend_metrics:
+            if not pk:
+                continue
+            txt, col = _classify(pk)
+            if "growth" in txt.lower() or txt == "Growing":
+                insight_bits.append(
+                    f'<li><b style="color:{col}">{label}</b> is {txt.lower()} across the window — '
+                    f'worth reviewing retention / sampling before sizing.</li>'
+                )
+            elif "decline" in txt.lower() or txt == "Declining":
+                insight_bits.append(
+                    f'<li><b style="color:{col}">{label}</b> is {txt.lower()} — possible optimisation already in place.</li>'
+                )
+        insights = (
+            "<ul class='insights'>" + "".join(insight_bits) + "</ul>"
+            if insight_bits else
+            "<p class='insights-empty'>No strong growth or decline pattern across the window.</p>"
+        )
+        trend_html = f"""
+<section class="panel">
+  <div class="panel-h">
+    <h2>Growth trend</h2>
+    <span class="panel-sub">{trends[0]['month']} → {trends[-1]['month']}</span>
+  </div>
+  {insights}
+  <table class="trend">
+    <thead><tr><th>Metric</th>{month_ths}</tr></thead>
+    <tbody>{rows}</tbody>
+  </table>
+  <p class="legend">% under each value = change vs prior month · red = growth · green = decline · grey = stable (±5%)</p>
+</section>"""
 
-    # ── Datadog source tiles (only non-zero) ──────────────────────────────
-    def _tile_row(items: list[tuple[str, str, str]]) -> str:
-        out = ""
-        for label, val, sub in items:
-            if val in ("0", "0.0", "—"): continue
-            out += (f'<div class="dd-tile"><div class="dd-lbl">{label}</div>'
-                    f'<div class="dd-val">{val}</div>'
-                    f'{"<div class=dd-sub>" + sub + "</div>" if sub else ""}'
-                    f'</div>')
-        return out
-
+    # ── Source tiles ──────────────────────────────────────────────────────
     infra = _tile_row([
-        ("Infra Hosts",       _fmt(snap.infra_hosts, 0),      "avg concurrent"),
-        ("APM Hosts",         _fmt(snap.apm_hosts, 0),        "avg concurrent"),
-        ("Containers",        _fmt(snap.containers, 0),       "avg concurrent"),
-        ("Profiled Hosts",    _fmt(snap.profiled_hosts, 0),   ""),
-        ("Fargate Tasks",     _fmt(snap.fargate_tasks, 0),    ""),
-        ("Network Hosts",     _fmt(snap.network_hosts, 0),    ""),
-        ("DBM Hosts",         _fmt(snap.dbm_hosts, 0),        ""),
+        ("Infra Hosts",     _fmt(snap.infra_hosts, 0),    "avg concurrent"),
+        ("APM Hosts",       _fmt(snap.apm_hosts, 0),      "avg concurrent"),
+        ("Containers",      _fmt(snap.containers, 0),     "avg concurrent"),
+        ("Profiled Hosts",  _fmt(snap.profiled_hosts, 0), ""),
+        ("Fargate Tasks",   _fmt(snap.fargate_tasks, 0),  ""),
+        ("Network Hosts",   _fmt(snap.network_hosts, 0),  ""),
+        ("DBM Hosts",       _fmt(snap.dbm_hosts, 0),      ""),
+        ("Custom Metrics",  _fmt(snap.custom_metrics),    ""),
     ])
     logs = _tile_row([
-        ("Ingested Logs",     _bytes_to_tb(snap.ingested_logs_bytes), ""),
-        ("Indexed 3d",        _fmt(snap.indexed_logs_3day),   ""),
-        ("Indexed 7d",        _fmt(snap.indexed_logs_7day),   ""),
-        ("Indexed 15d",       _fmt(snap.indexed_logs_15day),  ""),
-        ("Indexed 30d",       _fmt(snap.indexed_logs_30day),  ""),
-        ("Indexed 90d",       _fmt(snap.indexed_logs_90day),  ""),
-        ("SIEM",              _bytes_to_gb(snap.security_logs_bytes), ""),
+        ("Ingested Logs",   _bytes_to_tb(snap.ingested_logs_bytes), ""),
+        ("Indexed 3d",      _fmt(snap.indexed_logs_3day),  ""),
+        ("Indexed 7d",      _fmt(snap.indexed_logs_7day),  ""),
+        ("Indexed 15d",     _fmt(snap.indexed_logs_15day), ""),
+        ("Indexed 30d",     _fmt(snap.indexed_logs_30day), ""),
+        ("Indexed 90d",     _fmt(snap.indexed_logs_90day), ""),
+        ("SIEM",            _bytes_to_gb(snap.security_logs_bytes), ""),
     ])
     apm = _tile_row([
-        ("Ingested Spans",    _bytes_to_tb(snap.ingested_spans_bytes), ""),
-        ("Indexed Spans",     _fmt(snap.indexed_spans),       ""),
+        ("Ingested Spans",  _bytes_to_tb(snap.ingested_spans_bytes), ""),
+        ("Indexed Spans",   _fmt(snap.indexed_spans), ""),
     ])
     rum = _tile_row([
-        ("Sessions",          _fmt(snap.rum_sessions),        ""),
-        ("Session Replay",    _fmt(snap.rum_replay),          ""),
-        ("Errors",            _fmt(snap.rum_errors),          ""),
+        ("Sessions",        _fmt(snap.rum_sessions), ""),
+        ("Session Replay",  _fmt(snap.rum_replay),   ""),
+        ("Errors",          _fmt(snap.rum_errors),   ""),
     ])
-    custom_m = _tile_row([
-        ("Custom Metrics",    _fmt(snap.custom_metrics),      ""),
-        ("Ingested Custom",   _fmt(snap.ingested_custom_metrics), ""),
-    ])
-
-    # ── Sizing detail rows ────────────────────────────────────────────────
-    def _drow(label, val, note=""):
-        return f'<tr><td>{label}</td><td class="r">{val}</td><td class="note">{note}</td></tr>'
 
     html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -1515,208 +1561,196 @@ def generate_html(
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Datadog → Coralogix — {snap.month}</title>
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');
-
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&display=swap');
 *,*::before,*::after{{box-sizing:border-box;margin:0;padding:0}}
-body{{font-family:'Inter',system-ui,sans-serif;background:#0F0A18;color:#E8E3F3;font-size:13px;line-height:1.55}}
+body{{font-family:'DM Sans',system-ui,sans-serif;background:{CX_SOFT};color:{CX_INK};font-size:14px;line-height:1.5}}
+a{{color:{CX_GREEN_D}}}
 
-/* header bar */
-.hdr{{background:#160E24;padding:20px 32px;display:flex;align-items:center;gap:16px;border-bottom:1px solid #2A2040}}
-.hdr-mark{{width:6px;height:32px;border-radius:3px;background:#FC4C02;flex-shrink:0}}
-.hdr h1{{font-size:16px;font-weight:700;color:#fff;letter-spacing:-.3px}}
-.hdr .meta{{font-size:11px;color:#8B7FA0;margin-top:2px}}
-.hdr .meta b{{color:#C4BBD6}}
+.top{{background:{CX_WHITE};border-bottom:1px solid {CX_LINE};padding:18px 32px;display:flex;align-items:center;gap:14px}}
+.mark{{width:10px;height:10px;border-radius:50%;background:{CX_GREEN};box-shadow:0 0 0 4px rgba(0,179,122,.18)}}
+.top h1{{font-size:17px;font-weight:800;letter-spacing:-.02em}}
+.top .meta{{font-size:12px;color:{CX_MUTED};margin-top:2px}}
+.top .meta b{{color:{CX_INK};font-weight:600}}
 
-/* layout */
-.wrap{{max-width:1100px;margin:0 auto;padding:24px 32px 48px}}
+.wrap{{max-width:1080px;margin:0 auto;padding:28px 32px 48px}}
 
-/* action box (TCO) */
-.action{{background:linear-gradient(135deg,#1E1433 0%,#160E24 100%);border:1px solid #2A2040;border-radius:12px;padding:24px 28px}}
-.action-title{{font-size:14px;font-weight:800;color:#FC4C02;text-transform:uppercase;letter-spacing:.08em;margin-bottom:20px}}
-.action-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}}
-.kpi{{background:#0F0A18;border:1px solid #2A2040;border-radius:8px;padding:16px 18px}}
-.kpi-label{{font-size:10px;font-weight:700;color:#FC4C02;text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px}}
-.kpi-val{{font-size:26px;font-weight:900;color:#fff;letter-spacing:-.8px;line-height:1}}
-.kpi-unit{{font-size:10px;color:#6B5F80;margin-top:4px;text-transform:uppercase;letter-spacing:.03em}}
-.kpi-detail{{font-size:10px;color:#5A4E70;margin-top:8px;line-height:1.5}}
+.action{{background:{CX_WHITE};border:1px solid {CX_LINE};border-radius:14px;padding:22px 24px;box-shadow:0 1px 2px rgba(26,35,50,.04)}}
+.action-h{{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-bottom:16px;flex-wrap:wrap}}
+.action-h h2{{font-size:13px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;color:{CX_GREEN_D}}}
+.action-h p{{font-size:12px;color:{CX_MUTED}}}
+.kpis{{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px}}
+@media(max-width:900px){{.kpis{{grid-template-columns:repeat(2,minmax(0,1fr))}}}}
+.kpi{{background:{CX_SOFT};border:1px solid {CX_LINE};border-radius:10px;padding:14px 14px 12px}}
+.kpi .l{{font-size:11px;font-weight:700;color:{CX_GREEN_D};text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px}}
+.kpi .v{{font-size:22px;font-weight:800;letter-spacing:-.03em;color:{CX_INK};line-height:1.1}}
+.kpi .u{{font-size:11px;color:{CX_MUTED};margin-top:4px}}
+.kpi .d{{font-size:11px;color:{CX_MUTED};margin-top:8px;line-height:1.45}}
 
-/* cards */
-.card{{background:#160E24;border:1px solid #2A2040;border-radius:10px;padding:20px 24px;margin-top:20px}}
-.card-title{{font-size:11px;font-weight:700;color:#8B7FA0;text-transform:uppercase;letter-spacing:.08em;margin-bottom:14px}}
+.panel{{background:{CX_WHITE};border:1px solid {CX_LINE};border-radius:14px;padding:20px 22px;margin-top:18px}}
+.panel-h{{display:flex;align-items:baseline;gap:10px;margin-bottom:12px}}
+.panel-h h2{{font-size:15px;font-weight:800;color:{CX_INK}}}
+.panel-sub{{font-size:12px;color:{CX_MUTED}}}
 
-/* dd tiles */
-.dd-grid{{display:flex;flex-wrap:wrap;gap:8px}}
-.dd-tile{{background:#0F0A18;border:1px solid #2A2040;border-radius:6px;padding:10px 14px;min-width:120px;flex:1 1 120px;max-width:170px}}
-.dd-lbl{{font-size:10px;color:#6B5F80;font-weight:600;margin-bottom:3px}}
-.dd-val{{font-size:16px;font-weight:800;color:#C4BBD6}}
-.dd-sub{{font-size:9px;color:#4E4466;margin-top:2px}}
+.insights{{margin:0 0 14px 18px;color:{CX_MUTED};font-size:13px}}
+.insights li{{margin-bottom:4px}}
+.insights-empty{{font-size:13px;color:{CX_MUTED};margin-bottom:12px}}
 
-/* tables */
 table{{width:100%;border-collapse:collapse}}
-thead th{{text-align:left;font-size:10px;font-weight:700;color:#6B5F80;text-transform:uppercase;letter-spacing:.06em;padding:8px 12px;border-bottom:1px solid #2A2040}}
-thead th:not(:first-child){{text-align:right}}
-td{{padding:7px 12px;border-bottom:1px solid #1E1433;font-size:12px;color:#C4BBD6}}
-td.r{{text-align:right;font-weight:700;color:#E8E3F3;font-variant-numeric:tabular-nums}}
-td.note{{font-size:10px;color:#5A4E70}}
+th{{text-align:left;font-size:11px;font-weight:700;color:{CX_MUTED};text-transform:uppercase;letter-spacing:.04em;padding:8px 10px;border-bottom:1px solid {CX_LINE}}}
+th:not(:first-child),.r{{text-align:right}}
+td{{padding:10px;border-bottom:1px solid {CX_LINE};vertical-align:top}}
 tr:last-child td{{border-bottom:none}}
+.m{{font-weight:700;color:{CX_INK}}}
+.u{{display:block;font-size:11px;color:{CX_MUTED};font-weight:500;margin-top:1px}}
+.badge{{display:inline-block;margin-top:6px;font-size:10px;font-weight:700;padding:2px 8px;border:1px solid;border-radius:999px}}
+.chg{{display:block;font-size:11px;font-weight:700;margin-top:3px}}
+.chg.up{{color:{CX_GROW}}}
+.chg.dn{{color:{CX_DROP}}}
+.chg.flat{{color:{CX_FLAT}}}
+.legend{{font-size:11px;color:{CX_MUTED};margin-top:10px}}
 
-/* trend table */
-.trend-tbl td.metric-cell{{font-weight:700;color:#E8E3F3;min-width:130px;vertical-align:top}}
-.trend-tbl .unit{{display:block;font-size:9px;color:#5A4E70;font-weight:500;margin-top:1px}}
-.trend-tbl .trend-badge{{display:inline-block;font-size:9px;font-weight:700;padding:1px 7px;border:1px solid;border-radius:10px;margin-top:4px}}
-.chg{{display:block;font-size:10px;font-weight:600;margin-top:2px}}
-.chg.up{{color:#E74C3C}}
-.chg.dn{{color:#27AE60}}
-.chg.flat{{color:#7F8C8D}}
+.srcs{{display:flex;flex-wrap:wrap;gap:8px}}
+.src{{background:{CX_SOFT};border:1px solid {CX_LINE};border-radius:8px;padding:10px 12px;min-width:118px;flex:1 1 118px;max-width:160px}}
+.src-l{{font-size:11px;color:{CX_MUTED};font-weight:600}}
+.src-v{{font-size:15px;font-weight:800;color:{CX_INK};margin-top:2px}}
+.src-s{{font-size:10px;color:{CX_MUTED};margin-top:2px}}
 
-/* detail tables */
-.detail-tbl td:first-child{{color:#8B7FA0}}
-.detail-tbl td.r{{color:#FC4C02;font-weight:800}}
+.detail .r{{color:{CX_GREEN_D};font-weight:800;font-variant-numeric:tabular-nums}}
+.note{{font-size:11px;color:{CX_MUTED}}}
 
-/* assumptions */
-.assumptions{{font-size:11px;color:#5A4E70;margin-top:24px;line-height:1.8}}
-.assumptions b{{color:#8B7FA0}}
-
-/* footer */
-.ftr{{text-align:center;padding:20px;font-size:10px;color:#4E4466;border-top:1px solid #1E1433}}
+.assumptions{{margin-top:18px;font-size:12px;color:{CX_MUTED};line-height:1.7}}
+.assumptions b{{color:{CX_INK}}}
+.ftr{{text-align:center;padding:18px;font-size:11px;color:{CX_MUTED}}}
 </style>
 </head>
 <body>
 
-<div class="hdr">
-  <div class="hdr-mark"></div>
+<header class="top">
+  <div class="mark"></div>
   <div>
-    <h1>Datadog to Coralogix &mdash; Sizing Report</h1>
-    <div class="meta">
-      {snap.month} &nbsp;·&nbsp; <b>{snap.account_name or "N/A"}</b>
-      &nbsp;·&nbsp; {snap.site} &nbsp;·&nbsp; {snap.pulled_at[:10]}
+    <h1>Datadog → Coralogix sizing report</h1>
+    <div class="meta">{snap.month} · <b>{snap.account_name or "N/A"}</b> · {snap.site} · generated {snap.pulled_at[:10]}</div>
+  </div>
+</header>
+
+<main class="wrap">
+
+<section class="action">
+  <div class="action-h">
+    <h2>Enter these in the Coralogix TCO sheet</h2>
+    <p>Primary sizing inputs for {snap.month}</p>
+  </div>
+  <div class="kpis">
+    <div class="kpi">
+      <div class="l">Logs</div>
+      <div class="v">{cx.daily_logs_gb:,.1f}</div>
+      <div class="u">GB / day</div>
+      <div class="d">Mon {int(LOG_TIER_MON*100)}%: {cx.daily_logs_mon_gb:,.1f}<br>Comp {int(LOG_TIER_COMP*100)}%: {cx.daily_logs_comp_gb:,.1f}</div>
+    </div>
+    <div class="kpi">
+      <div class="l">Metrics</div>
+      <div class="v">{cx.total_ts:,.0f}</div>
+      <div class="u">NumSeries</div>
+    </div>
+    <div class="kpi">
+      <div class="l">Tracing</div>
+      <div class="v">{cx.daily_spans_ingest_gb:,.1f}</div>
+      <div class="u">GB / day</div>
+      <div class="d">Mon {int(SPAN_TIER_MON*100)}%: {cx.daily_spans_mon_gb:,.1f}<br>Comp {int(SPAN_TIER_COMP*100)}%: {cx.daily_spans_comp_gb:,.1f}</div>
+    </div>
+    <div class="kpi">
+      <div class="l">RUM Sessions</div>
+      <div class="v">{cx.rum_sessions_daily:,.0f}</div>
+      <div class="u">sessions / day</div>
+    </div>
+    <div class="kpi">
+      <div class="l">RUM Recording</div>
+      <div class="v">{cx.rum_session_recording_daily:,.0f}</div>
+      <div class="u">recordings / day</div>
     </div>
   </div>
-</div>
+</section>
 
-<div class="wrap">
+{trend_html}
 
-<!-- ═══ ACTION: TCO SHEET VALUES ═══ -->
-<div class="action">
-  <div class="action-title">Enter these values in the Coralogix TCO Sheet</div>
-  <div class="action-grid">
-    <div class="kpi">
-      <div class="kpi-label">Logs</div>
-      <div class="kpi-val">{cx.daily_logs_gb:,.1f}</div>
-      <div class="kpi-unit">GB / day</div>
-      <div class="kpi-detail">Mon {int(LOG_TIER_MON*100)}%: {cx.daily_logs_mon_gb:,.1f}<br>Comp {int(LOG_TIER_COMP*100)}%: {cx.daily_logs_comp_gb:,.1f}</div>
-    </div>
-    <div class="kpi">
-      <div class="kpi-label">Metrics</div>
-      <div class="kpi-val">{cx.total_ts:,.0f}</div>
-      <div class="kpi-unit">NumSeries</div>
-    </div>
-    <div class="kpi">
-      <div class="kpi-label">Tracing</div>
-      <div class="kpi-val">{cx.daily_spans_ingest_gb:,.1f}</div>
-      <div class="kpi-unit">GB / day</div>
-      <div class="kpi-detail">Mon {int(SPAN_TIER_MON*100)}%: {cx.daily_spans_mon_gb:,.1f}<br>Comp {int(SPAN_TIER_COMP*100)}%: {cx.daily_spans_comp_gb:,.1f}</div>
-    </div>
-    <div class="kpi">
-      <div class="kpi-label">RUM Sessions</div>
-      <div class="kpi-val">{cx.rum_sessions_daily:,.0f}</div>
-      <div class="kpi-unit">sessions / day</div>
-    </div>
-    <div class="kpi">
-      <div class="kpi-label">RUM Recording</div>
-      <div class="kpi-val">{cx.rum_session_recording_daily:,.0f}</div>
-      <div class="kpi-unit">recordings / day</div>
-    </div>
-  </div>
-</div>
+<section class="panel">
+  <div class="panel-h"><h2>Datadog source — infra &amp; metrics</h2><span class="panel-sub">{snap.month}</span></div>
+  <div class="srcs">{infra}</div>
+</section>
+<section class="panel">
+  <div class="panel-h"><h2>Datadog source — logs</h2></div>
+  <div class="srcs">{logs}</div>
+</section>
+<section class="panel">
+  <div class="panel-h"><h2>Datadog source — tracing</h2></div>
+  <div class="srcs">{apm}</div>
+</section>
+<section class="panel">
+  <div class="panel-h"><h2>Datadog source — RUM</h2></div>
+  <div class="srcs">{rum}</div>
+</section>
 
-{trend_table_html}
-
-<!-- ═══ DATADOG SOURCE DATA ═══ -->
-<div class="card">
-  <div class="card-title">Datadog Source — Infrastructure &amp; Metrics ({snap.month})</div>
-  <div class="dd-grid">{infra}{custom_m}</div>
-</div>
-<div class="card">
-  <div class="card-title">Datadog Source — Logs</div>
-  <div class="dd-grid">{logs}</div>
-</div>
-<div class="card">
-  <div class="card-title">Datadog Source — APM / Tracing</div>
-  <div class="dd-grid">{apm}</div>
-</div>
-<div class="card">
-  <div class="card-title">Datadog Source — RUM</div>
-  <div class="dd-grid">{rum}</div>
-</div>
-
-<!-- ═══ SIZING DETAIL ═══ -->
-<div class="card">
-  <div class="card-title">Sizing Detail — Logs</div>
-  <table class="detail-tbl">
+<section class="panel">
+  <div class="panel-h"><h2>Sizing detail — logs</h2></div>
+  <table class="detail">
     <thead><tr><th>Metric</th><th>Value</th><th>Note</th></tr></thead>
     <tbody>
-      {_drow("Total ingested",    f"{cx.total_ingested_logs_gb_month:,.1f} GB/mo")}
-      {_drow("Total indexed",     f"{cx.total_indexed_logs_count:,.0f} events",    "all retention tiers")}
-      {_drow("Daily ingested",    f"{cx.daily_logs_gb:,.1f} GB/day",               "÷ 30")}
-      {_drow("→ Monitoring",      f"{cx.daily_logs_mon_gb:,.1f} GB/day",           f"{int(LOG_TIER_MON*100)}%")}
-      {_drow("→ Compliance",      f"{cx.daily_logs_comp_gb:,.1f} GB/day",          f"{int(LOG_TIER_COMP*100)}%")}
+      {_drow("Total ingested", f"{cx.total_ingested_logs_gb_month:,.1f} GB/mo")}
+      {_drow("Total indexed",  f"{cx.total_indexed_logs_count:,.0f} events", "all retention tiers")}
+      {_drow("Daily ingested", f"{cx.daily_logs_gb:,.1f} GB/day", "÷ 30")}
+      {_drow("→ Monitoring",   f"{cx.daily_logs_mon_gb:,.1f} GB/day", f"{int(LOG_TIER_MON*100)}%")}
+      {_drow("→ Compliance",   f"{cx.daily_logs_comp_gb:,.1f} GB/day", f"{int(LOG_TIER_COMP*100)}%")}
     </tbody>
   </table>
-</div>
-<div class="card">
-  <div class="card-title">Sizing Detail — Metrics</div>
-  <table class="detail-tbl">
+</section>
+<section class="panel">
+  <div class="panel-h"><h2>Sizing detail — metrics</h2></div>
+  <table class="detail">
     <thead><tr><th>Metric</th><th>Value</th><th>Note</th></tr></thead>
     <tbody>
-      {_drow("Hosts (all types)", f"{cx.host_count:,.0f}",                         "infra + apm + profiled + fargate")}
+      {_drow("Hosts (all types)", f"{cx.host_count:,.0f}", "infra + apm + profiled + fargate")}
       {_drow("Containers",        f"{cx.container_count:,.0f}")}
-      {_drow("Host+Container TS", f"{cx.host_container_ts:,.0f}",                  f"× {TS_PER_HOST} each")}
+      {_drow("Host+Container TS", f"{cx.host_container_ts:,.0f}", f"× {TS_PER_HOST} each")}
       {_drow("Custom Metrics",    f"{snap.custom_metrics:,.0f}")}
-      {_drow("Total NumSeries",   f"{cx.total_ts:,.0f}",                           "all sources")}
+      {_drow("Total NumSeries",   f"{cx.total_ts:,.0f}", "all sources")}
     </tbody>
   </table>
-</div>
-<div class="card">
-  <div class="card-title">Sizing Detail — Tracing</div>
-  <table class="detail-tbl">
+</section>
+<section class="panel">
+  <div class="panel-h"><h2>Sizing detail — tracing</h2></div>
+  <table class="detail">
     <thead><tr><th>Metric</th><th>Value</th><th>Note</th></tr></thead>
     <tbody>
-      {_drow("Ingested spans",    f"{cx.ingested_spans_gb_month:,.1f} GB/mo",      "twol_ingested_events_bytes")}
-      {_drow("Daily ingested",    f"{cx.daily_spans_ingest_gb:,.1f} GB/day",       "÷ 30")}
-      {_drow("→ Monitoring",      f"{cx.daily_spans_mon_gb:,.1f} GB/day",          f"{int(SPAN_TIER_MON*100)}%")}
-      {_drow("→ Compliance",      f"{cx.daily_spans_comp_gb:,.1f} GB/day",         f"{int(SPAN_TIER_COMP*100)}%")}
+      {_drow("Ingested spans", f"{cx.ingested_spans_gb_month:,.1f} GB/mo", "twol_ingested_events_bytes")}
+      {_drow("Daily ingested", f"{cx.daily_spans_ingest_gb:,.1f} GB/day", "÷ 30")}
+      {_drow("→ Monitoring",   f"{cx.daily_spans_mon_gb:,.1f} GB/day", f"{int(SPAN_TIER_MON*100)}%")}
+      {_drow("→ Compliance",   f"{cx.daily_spans_comp_gb:,.1f} GB/day", f"{int(SPAN_TIER_COMP*100)}%")}
     </tbody>
   </table>
-</div>
-<div class="card">
-  <div class="card-title">Sizing Detail — RUM</div>
-  <table class="detail-tbl">
+</section>
+<section class="panel">
+  <div class="panel-h"><h2>Sizing detail — RUM</h2></div>
+  <table class="detail">
     <thead><tr><th>Metric</th><th>Value</th><th>Note</th></tr></thead>
     <tbody>
-      {_drow("Sessions/month",    f"{cx.rum_sessions_monthly:,.0f}")}
-      {_drow("Sessions/day",      f"{cx.rum_sessions_daily:,.0f}",                 "÷ 30")}
-      {_drow("Recordings/day",    f"{cx.rum_session_recording_daily:,.0f}",         "replay ÷ 30")}
+      {_drow("Sessions/month", f"{cx.rum_sessions_monthly:,.0f}")}
+      {_drow("Sessions/day",   f"{cx.rum_sessions_daily:,.0f}", "÷ 30")}
+      {_drow("Recordings/day", f"{cx.rum_session_recording_daily:,.0f}", "replay ÷ 30")}
     </tbody>
   </table>
-</div>
+</section>
 
-<div class="assumptions">
+<p class="assumptions">
   Assumptions: avg log <b>{AVG_LOG_SIZE_KB} KB</b> · avg span <b>{AVG_SPAN_SIZE_KB} KB</b>
   · <b>{TS_PER_HOST}</b> TS/host · <b>{int(DAYS_PER_MONTH)}</b> days/mo
   · logs <b>{int(LOG_TIER_MON*100)}/{int(LOG_TIER_COMP*100)}</b> mon/comp
   · spans <b>{int(SPAN_TIER_MON*100)}/{int(SPAN_TIER_COMP*100)}</b> mon/comp
-</div>
+</p>
 
-</div>
-
-<div class="ftr">
-  Datadog → Coralogix · {snap.month} · {snap.pulled_at[:10]} · dd_usage_pull.py
-</div>
-
+</main>
+<footer class="ftr">Datadog → Coralogix · {snap.month} · {snap.pulled_at[:10]} · dd_usage_pull.py</footer>
 </body>
 </html>"""
-
     return html.encode("utf-8")
 
 
