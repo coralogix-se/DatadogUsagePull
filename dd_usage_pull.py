@@ -499,14 +499,16 @@ def extract_usage_snapshot(
 
         # APM / Tracing
         snap.ingested_spans_bytes = _f(item,
+            "twol_ingested_events_bytes_sum",  # Tracing Without Limits — primary ingestion field
             "ingested_spans_bytes_agg_sum",
             "ingested_spans_bytes_sum",
-            "apm_ingest_gb_sum",               # GB; multiply by 1e9 below if > 0
         )
-        # apm_ingest_gb_sum is in GB, not bytes — convert if it looks like GB scale
-        _apm_gb_check = _f(item, "apm_ingest_gb_sum")
-        if _apm_gb_check > 0 and snap.ingested_spans_bytes == _apm_gb_check:
-            snap.ingested_spans_bytes = _apm_gb_check * 1e9
+        # apm_ingest_gb_sum only covers overages above the 150 GB/APM-host/month free tier;
+        # use it only as a last resort when no byte-level field found, and convert GB → bytes.
+        if snap.ingested_spans_bytes == 0:
+            _apm_overage_gb = _f(item, "apm_ingest_gb_sum", "apm_ingest_only_gb_sum")
+            if _apm_overage_gb:
+                snap.ingested_spans_bytes = _apm_overage_gb * 1e9
 
         snap.indexed_spans = _f(item,
             "trace_search_indexed_events_count_sum",   # newer naming
@@ -1233,7 +1235,7 @@ def generate_xlsx(snap: UsageSnapshot, cx: CoralogixSizing) -> bytes | None:
             ("Metrics Units / Day",           cx.metrics_units_per_day,        "Units/day",  "total_ts × 3.3e-5"),
         ]),
         ("TRACING", _ORANGE, [
-            ("Ingested Spans",                cx.ingested_spans_gb_month,      "GB/month",   "ingested_spans_bytes ÷ 1e9"),
+            ("Ingested Spans",                cx.ingested_spans_gb_month,      "GB/month",   "twol_ingested_events_bytes_sum ÷ 1e9"),
             ("Indexed Spans",                 cx.indexed_spans_gb_month,       "GB/month",   "(indexed_spans+custom_events) × 1.5 KB ÷ 1024²"),
             ("Indexed Span Percentage",       cx.indexed_pct_spans * 100,      "%",          "indexed_gb / ingested_gb"),
             ("Daily Ingested Spans",          cx.daily_spans_ingest_gb,        "GB/day",     "ingested_gb ÷ 30"),
