@@ -470,8 +470,6 @@ def extract_usage_snapshot(
         )
         # SIEM / security logs
         snap.security_logs_bytes = _f(item,
-            "twol_ingested_events_bytes_sum",      # "2nd line" (SIEM) ingested bytes
-            "twol_ingested_events_bytes_agg_sum",
             "siem_ingested_bytes_agg_sum",
             "siem_analyzed_logs_add_on_count_sum",
         )
