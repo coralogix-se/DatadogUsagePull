@@ -144,6 +144,31 @@ class DatadogClient:
             p["end_month"] = end_month
         return self._get("/api/v1/usage/summary", p)
 
+    def hourly_usage_timeseries(self, month: str) -> list[dict]:
+        """v2 hourly usage for the `timeseries` product family (custom metrics).
+
+        /api/v1/usage/summary frequently reports null/0 custom-metric fields on
+        newer orgs even when the account has custom metrics — the authoritative
+        source is the v2 hourly usage API. Returns all hourly records (across
+        pagination) for the given YYYY-MM month.
+        """
+        y, m = (int(x) for x in month.split("-"))
+        ny, nm = (y + 1, 1) if m == 12 else (y, m + 1)
+        params: dict[str, str | int] = {
+            "filter[timestamp][start]": f"{month}-01T00:00:00+00:00",
+            "filter[timestamp][end]":   f"{ny:04d}-{nm:02d}-01T00:00:00+00:00",
+            "filter[product_families]": "timeseries",
+            "page[limit]": 500,
+        }
+        records: list[dict] = []
+        while True:
+            resp = self._get("/api/v2/usage/hourly_usage", params)
+            records.extend(resp.get("data", []))
+            nxt = ((resp.get("meta") or {}).get("pagination") or {}).get("next_record_id")
+            if not nxt:
+                return records
+            params["page[next_record_id]"] = nxt
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # SECTION 3 — Data model
@@ -631,6 +656,39 @@ def extract_usage_snapshot(
 # ═══════════════════════════════════════════════════════════════════════════
 # SECTION 5 — Coralogix conversion  (matches the Excel template formulas)
 # ═══════════════════════════════════════════════════════════════════════════
+
+def custom_metrics_from_hourly(records: list[dict]) -> tuple[float, float]:
+    """Average hourly custom time series from v2 hourly usage records.
+
+    Datadog bills custom metrics on the average of hourly distinct custom
+    time series, so hourly measurements are summed per hour across orgs,
+    then averaged over the hours that reported data.
+    Returns (avg_indexed_custom_ts, avg_ingested_custom_ts).
+    """
+    per_hour_indexed:  dict[str, float] = {}
+    per_hour_ingested: dict[str, float] = {}
+    for rec in records:
+        attrs = rec.get("attributes") or {}
+        hour = str(attrs.get("timestamp", ""))
+        for meas in attrs.get("measurements") or []:
+            val = meas.get("value")
+            if val is None:
+                continue
+            usage_type = meas.get("usage_type", "")
+            if usage_type == "num_custom_timeseries":
+                per_hour_indexed[hour] = per_hour_indexed.get(hour, 0.0) + float(val)
+            elif usage_type == "num_custom_input_timeseries":
+                per_hour_ingested[hour] = per_hour_ingested.get(hour, 0.0) + float(val)
+    avg_indexed = (
+        sum(per_hour_indexed.values()) / len(per_hour_indexed)
+        if per_hour_indexed else 0.0
+    )
+    avg_ingested = (
+        sum(per_hour_ingested.values()) / len(per_hour_ingested)
+        if per_hour_ingested else 0.0
+    )
+    return avg_indexed, avg_ingested
+
 
 def compute_coralogix_sizing(snap: UsageSnapshot) -> CoralogixSizing:
     """Apply the sizing formulas from the Excel template to the usage snapshot."""
@@ -1796,6 +1854,26 @@ def main() -> None:
             continue
         m_raw = {"usage": m_items}
         snap = extract_usage_snapshot(m_raw, m, site)
+
+        # Custom-metrics fallback: /v1/usage/summary often reports null/0
+        # custom-metric fields even when the account has custom metrics.
+        # Whenever the summary shows zero, verify against the v2 hourly usage
+        # API ("timeseries" product family) — the authoritative source.
+        if snap.custom_metrics == 0:
+            try:
+                ts_records = client.hourly_usage_timeseries(m)
+                cm_indexed, cm_ingested = custom_metrics_from_hourly(ts_records)
+                if cm_indexed or cm_ingested:
+                    print(f"    {m}: custom metrics recovered from v2 hourly usage "
+                          f"({cm_indexed:,.0f} avg indexed TS — summary reported 0)")
+                    snap.custom_metrics          = cm_indexed
+                    snap.ingested_custom_metrics = (
+                        snap.ingested_custom_metrics or cm_ingested
+                    )
+                snap.raw["hourly_usage_timeseries"] = ts_records
+            except Exception as exc:
+                print(f"    {m}: WARN — v2 hourly usage (timeseries) check failed: {exc}")
+
         cx = compute_coralogix_sizing(snap)
         all_pairs.append((snap, cx))
         print(f"    {m}: ✓  logs={cx.daily_logs_gb:.1f} GB/day  "

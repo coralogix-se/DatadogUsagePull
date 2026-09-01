@@ -137,6 +137,7 @@ Official [Usage Metering API](https://docs.datadoghq.com/api/latest/usage-meteri
 | Endpoint | Purpose |
 |---|---|
 | `GET /api/v1/usage/summary` | Product usage volumes for the 3-month window |
+| `GET /api/v2/usage/hourly_usage?filter[product_families]=timeseries` | Custom-metrics fallback — only called for months where the summary reports zero custom metrics |
 
 The script does **not** call `estimated_cost`, `historical_cost`, `projected_cost`, or `billable-summary`.
 
@@ -147,6 +148,7 @@ The script does **not** call `estimated_cost`, `historical_cost`, `projected_cos
 - Host / container `_sum` fields are often **host-hours** for the month. The script converts them to average concurrent counts with ÷ 720.
 - Ingested spans often come from `twol_ingested_events_bytes_sum` (Tracing Without Limits). `apm_ingest_gb_sum` is frequently null when usage is within Datadog’s included APM ingest allocation.
 - Indexed spans come from `trace_search_indexed_events_count_sum`.
+- Custom-metric fields in `/v1/usage/summary` (`custom_ts_avg` etc.) are often null/0 even when the account has custom metrics; the v2 hourly usage `timeseries` family is the authoritative source and is used as a fallback.
 
 ---
 
