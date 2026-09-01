@@ -359,21 +359,36 @@ def extract_usage_snapshot(
                             "dbm_host_database_instance_top99p")
 
         # Containers: "_sum" = total container-hours for the month; ÷720 = concurrent count
-        raw_container_hours = _f(item, "container_sum", "container_count_avg_sum",
-                                 "container_avg_sum")
+        # Current API responses report the fleet under container_excl_agent_* (all
+        # containers excluding the Datadog Agent container); older responses used
+        # container_sum. Missing container_excl_agent_sum silently zeroed the whole
+        # container fleet and badly understated the metrics sizing.
+        raw_container_hours = _f(item, "container_sum", "container_excl_agent_sum",
+                                 "container_count_avg_sum", "container_avg_sum")
         snap.container_hours = raw_container_hours   # used for the "Container Hours" tile
         snap.containers = (
-            _f(item, "container_count_avg", "container_avg")   # already an average — use as-is
+            _f(item, "container_count_avg", "container_avg",
+               "container_excl_agent_avg")   # already an average — use as-is
             or (raw_container_hours / HOURS_PER_MONTH if raw_container_hours else 0.0)
         )
 
         # Profiling / Fargate
         # profiling_host_top99p is already a concurrent count; profiling_container_agent_count_sum is hours
+        # Current API responses omit the top99p fields and instead report
+        # profiling_host_hours_sum (host-hours; ÷720 = avg concurrent).
+        # profiling_uncategorized_host_count_sum mirrors the hours value despite
+        # its "_count" name, so it is also treated as hours here.
         snap.profiled_hosts = _f(item,
             "profiling_host_top99p",
             "profiling_host_count_top99p_sum", "profiling_host_count_top99p",
             "profiling_uncategorized_host_count_top99p",
         )
+        if not snap.profiled_hosts:
+            _prof_host_hours = _f(item, "profiling_host_hours_sum",
+                                  "profiling_uncategorized_host_count_sum")
+            snap.profiled_hosts = (
+                _prof_host_hours / HOURS_PER_MONTH if _prof_host_hours else 0.0
+            )
         _prof_cont_hours = _f(item, "profiling_container_agent_count_sum")
         snap.profiled_containers = (
             _f(item, "profiling_container_agent_count_avg", "profiling_container_count_avg_sum")
@@ -389,12 +404,25 @@ def extract_usage_snapshot(
         snap.fargate_tasks = _f(item, "fargate_tasks_count_avg_sum",
                                 "fargate_tasks_count_avg", "fargate_tasks_count_hwm")
 
-        # Custom Metrics
-        snap.custom_metrics          = _f(item, "custom_ts_avg", "custom_ts_avg_sum",
-                                          "custom_timeseries_avg_sum")
-        snap.ingested_custom_metrics = _f(item, "custom_ingested_timeseries_average_sum",
+        # Custom Metrics — v1 usage summary per-month fields:
+        #   custom_ts_avg                              = avg indexed custom TS (may be null)
+        #   custom_live_ts_avg + custom_historical_ts_avg = live/historical components
+        #   custom_output_ts_avg                       = indexed  (Metrics without Limits)
+        #   custom_input_ts_avg                        = ingested (Metrics without Limits)
+        # custom_ts_avg is often null in current responses while the component
+        # fields are populated, so fall back to output TS, then live+historical.
+        snap.custom_metrics = _f(item, "custom_ts_avg", "custom_output_ts_avg",
+                                 "custom_ts_avg_sum", "custom_timeseries_avg_sum")
+        if not snap.custom_metrics:
+            snap.custom_metrics = (
+                _f(item, "custom_live_ts_avg") + _f(item, "custom_historical_ts_avg")
+            )
+        # NOTE: custom_live_ts_avg is *live indexed* custom TS, not ingested — it was
+        # previously (incorrectly) used as an ingested fallback here.
+        snap.ingested_custom_metrics = _f(item, "custom_input_ts_avg",
+                                          "custom_ingested_timeseries_average_sum",
                                           "ingested_custom_timeseries_average_sum",
-                                          "custom_live_ts_avg_sum", "custom_live_ts_avg")
+                                          "custom_live_ts_avg_sum")
 
         # Logs — ingested bytes
         # "live_ingested_bytes_sum" is the most common field in newer API responses
@@ -469,9 +497,12 @@ def extract_usage_snapshot(
             "logs_indexed_360_day_agg_sum",
         )
         # SIEM / security logs
+        # Cloud SIEM analyzed-log volume is reported as analyzed_logs_bytes_sum in
+        # current responses. siem_analyzed_logs_add_on_count_sum was removed from
+        # this list: it is an event COUNT, not bytes, and polluted this bytes field.
         snap.security_logs_bytes = _f(item,
+            "analyzed_logs_bytes_sum",
             "siem_ingested_bytes_agg_sum",
-            "siem_analyzed_logs_add_on_count_sum",
         )
 
         # APM / Tracing
@@ -805,7 +836,7 @@ def generate_csv(snap: UsageSnapshot, cx: CoralogixSizing) -> bytes:
         ("Ingested Spans",                 snap.ingested_spans_bytes, "bytes"),
         ("Indexed Spans",                  snap.indexed_spans,        "events"),
         ("Profiled Hosts",                 snap.profiled_hosts,       "hosts"),
-        ("Profiled Container Hours",       snap.profiled_containers,  "container-hours"),
+        ("Profiled Containers",            snap.profiled_containers,  "containers (avg concurrent)"),
         ("Serverless Workload Functions",  snap.serverless_functions, "functions"),
         ("Serverless Invocations",         snap.serverless_invocations, "invocations"),
         ("Serverless App Instances",       snap.serverless_app_instances, "instances"),
@@ -996,7 +1027,7 @@ def generate_xlsx(
         ("Ingested Spans",           snap.ingested_spans_bytes,     _bytes_to_tb(snap.ingested_spans_bytes), "bytes"),
         ("Indexed Spans",            snap.indexed_spans,            _fmt(snap.indexed_spans), "events"),
         ("Profiled Hosts",           snap.profiled_hosts,           _fmt(snap.profiled_hosts, 0), "hosts"),
-        ("Profiled Container Hours", snap.profiled_containers,      _fmt(snap.profiled_containers), "container-hours"),
+        ("Profiled Containers",      snap.profiled_containers,      _fmt(snap.profiled_containers), "containers (avg concurrent)"),
         ("APM Fargate Tasks",        snap.apm_fargate,              _fmt(snap.apm_fargate, 0), "tasks"),
         ("Profiled Fargate Tasks",   snap.profiled_fargate,         _fmt(snap.profiled_fargate, 0), "tasks"),
         ("Custom Events",            snap.custom_events,            _fmt(snap.custom_events), "events"),
