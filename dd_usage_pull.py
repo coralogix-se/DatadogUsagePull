@@ -144,6 +144,31 @@ class DatadogClient:
             p["end_month"] = end_month
         return self._get("/api/v1/usage/summary", p)
 
+    def hourly_usage_timeseries(self, month: str) -> list[dict]:
+        """v2 hourly usage for the `timeseries` product family (custom metrics).
+
+        /api/v1/usage/summary frequently reports null/0 custom-metric fields on
+        newer orgs even when the account has custom metrics — the authoritative
+        source is the v2 hourly usage API. Returns all hourly records (across
+        pagination) for the given YYYY-MM month.
+        """
+        y, m = (int(x) for x in month.split("-"))
+        ny, nm = (y + 1, 1) if m == 12 else (y, m + 1)
+        params: dict[str, str | int] = {
+            "filter[timestamp][start]": f"{month}-01T00:00:00+00:00",
+            "filter[timestamp][end]":   f"{ny:04d}-{nm:02d}-01T00:00:00+00:00",
+            "filter[product_families]": "timeseries",
+            "page[limit]": 500,
+        }
+        records: list[dict] = []
+        while True:
+            resp = self._get("/api/v2/usage/hourly_usage", params)
+            records.extend(resp.get("data", []))
+            nxt = ((resp.get("meta") or {}).get("pagination") or {}).get("next_record_id")
+            if not nxt:
+                return records
+            params["page[next_record_id]"] = nxt
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # SECTION 3 — Data model
@@ -359,21 +384,36 @@ def extract_usage_snapshot(
                             "dbm_host_database_instance_top99p")
 
         # Containers: "_sum" = total container-hours for the month; ÷720 = concurrent count
-        raw_container_hours = _f(item, "container_sum", "container_count_avg_sum",
-                                 "container_avg_sum")
+        # Current API responses report the fleet under container_excl_agent_* (all
+        # containers excluding the Datadog Agent container); older responses used
+        # container_sum. Missing container_excl_agent_sum silently zeroed the whole
+        # container fleet and badly understated the metrics sizing.
+        raw_container_hours = _f(item, "container_sum", "container_excl_agent_sum",
+                                 "container_count_avg_sum", "container_avg_sum")
         snap.container_hours = raw_container_hours   # used for the "Container Hours" tile
         snap.containers = (
-            _f(item, "container_count_avg", "container_avg")   # already an average — use as-is
+            _f(item, "container_count_avg", "container_avg",
+               "container_excl_agent_avg")   # already an average — use as-is
             or (raw_container_hours / HOURS_PER_MONTH if raw_container_hours else 0.0)
         )
 
         # Profiling / Fargate
         # profiling_host_top99p is already a concurrent count; profiling_container_agent_count_sum is hours
+        # Current API responses omit the top99p fields and instead report
+        # profiling_host_hours_sum (host-hours; ÷720 = avg concurrent).
+        # profiling_uncategorized_host_count_sum mirrors the hours value despite
+        # its "_count" name, so it is also treated as hours here.
         snap.profiled_hosts = _f(item,
             "profiling_host_top99p",
             "profiling_host_count_top99p_sum", "profiling_host_count_top99p",
             "profiling_uncategorized_host_count_top99p",
         )
+        if not snap.profiled_hosts:
+            _prof_host_hours = _f(item, "profiling_host_hours_sum",
+                                  "profiling_uncategorized_host_count_sum")
+            snap.profiled_hosts = (
+                _prof_host_hours / HOURS_PER_MONTH if _prof_host_hours else 0.0
+            )
         _prof_cont_hours = _f(item, "profiling_container_agent_count_sum")
         snap.profiled_containers = (
             _f(item, "profiling_container_agent_count_avg", "profiling_container_count_avg_sum")
@@ -389,12 +429,25 @@ def extract_usage_snapshot(
         snap.fargate_tasks = _f(item, "fargate_tasks_count_avg_sum",
                                 "fargate_tasks_count_avg", "fargate_tasks_count_hwm")
 
-        # Custom Metrics
-        snap.custom_metrics          = _f(item, "custom_ts_avg", "custom_ts_avg_sum",
-                                          "custom_timeseries_avg_sum")
-        snap.ingested_custom_metrics = _f(item, "custom_ingested_timeseries_average_sum",
+        # Custom Metrics — v1 usage summary per-month fields:
+        #   custom_ts_avg                              = avg indexed custom TS (may be null)
+        #   custom_live_ts_avg + custom_historical_ts_avg = live/historical components
+        #   custom_output_ts_avg                       = indexed  (Metrics without Limits)
+        #   custom_input_ts_avg                        = ingested (Metrics without Limits)
+        # custom_ts_avg is often null in current responses while the component
+        # fields are populated, so fall back to output TS, then live+historical.
+        snap.custom_metrics = _f(item, "custom_ts_avg", "custom_output_ts_avg",
+                                 "custom_ts_avg_sum", "custom_timeseries_avg_sum")
+        if not snap.custom_metrics:
+            snap.custom_metrics = (
+                _f(item, "custom_live_ts_avg") + _f(item, "custom_historical_ts_avg")
+            )
+        # NOTE: custom_live_ts_avg is *live indexed* custom TS, not ingested — it was
+        # previously (incorrectly) used as an ingested fallback here.
+        snap.ingested_custom_metrics = _f(item, "custom_input_ts_avg",
+                                          "custom_ingested_timeseries_average_sum",
                                           "ingested_custom_timeseries_average_sum",
-                                          "custom_live_ts_avg_sum", "custom_live_ts_avg")
+                                          "custom_live_ts_avg_sum")
 
         # Logs — ingested bytes
         # "live_ingested_bytes_sum" is the most common field in newer API responses
@@ -469,9 +522,12 @@ def extract_usage_snapshot(
             "logs_indexed_360_day_agg_sum",
         )
         # SIEM / security logs
+        # Cloud SIEM analyzed-log volume is reported as analyzed_logs_bytes_sum in
+        # current responses. siem_analyzed_logs_add_on_count_sum was removed from
+        # this list: it is an event COUNT, not bytes, and polluted this bytes field.
         snap.security_logs_bytes = _f(item,
+            "analyzed_logs_bytes_sum",
             "siem_ingested_bytes_agg_sum",
-            "siem_analyzed_logs_add_on_count_sum",
         )
 
         # APM / Tracing
@@ -600,6 +656,39 @@ def extract_usage_snapshot(
 # ═══════════════════════════════════════════════════════════════════════════
 # SECTION 5 — Coralogix conversion  (matches the Excel template formulas)
 # ═══════════════════════════════════════════════════════════════════════════
+
+def custom_metrics_from_hourly(records: list[dict]) -> tuple[float, float]:
+    """Average hourly custom time series from v2 hourly usage records.
+
+    Datadog bills custom metrics on the average of hourly distinct custom
+    time series, so hourly measurements are summed per hour across orgs,
+    then averaged over the hours that reported data.
+    Returns (avg_indexed_custom_ts, avg_ingested_custom_ts).
+    """
+    per_hour_indexed:  dict[str, float] = {}
+    per_hour_ingested: dict[str, float] = {}
+    for rec in records:
+        attrs = rec.get("attributes") or {}
+        hour = str(attrs.get("timestamp", ""))
+        for meas in attrs.get("measurements") or []:
+            val = meas.get("value")
+            if val is None:
+                continue
+            usage_type = meas.get("usage_type", "")
+            if usage_type == "num_custom_timeseries":
+                per_hour_indexed[hour] = per_hour_indexed.get(hour, 0.0) + float(val)
+            elif usage_type == "num_custom_input_timeseries":
+                per_hour_ingested[hour] = per_hour_ingested.get(hour, 0.0) + float(val)
+    avg_indexed = (
+        sum(per_hour_indexed.values()) / len(per_hour_indexed)
+        if per_hour_indexed else 0.0
+    )
+    avg_ingested = (
+        sum(per_hour_ingested.values()) / len(per_hour_ingested)
+        if per_hour_ingested else 0.0
+    )
+    return avg_indexed, avg_ingested
+
 
 def compute_coralogix_sizing(snap: UsageSnapshot) -> CoralogixSizing:
     """Apply the sizing formulas from the Excel template to the usage snapshot."""
@@ -805,7 +894,7 @@ def generate_csv(snap: UsageSnapshot, cx: CoralogixSizing) -> bytes:
         ("Ingested Spans",                 snap.ingested_spans_bytes, "bytes"),
         ("Indexed Spans",                  snap.indexed_spans,        "events"),
         ("Profiled Hosts",                 snap.profiled_hosts,       "hosts"),
-        ("Profiled Container Hours",       snap.profiled_containers,  "container-hours"),
+        ("Profiled Containers",            snap.profiled_containers,  "containers (avg concurrent)"),
         ("Serverless Workload Functions",  snap.serverless_functions, "functions"),
         ("Serverless Invocations",         snap.serverless_invocations, "invocations"),
         ("Serverless App Instances",       snap.serverless_app_instances, "instances"),
@@ -996,7 +1085,7 @@ def generate_xlsx(
         ("Ingested Spans",           snap.ingested_spans_bytes,     _bytes_to_tb(snap.ingested_spans_bytes), "bytes"),
         ("Indexed Spans",            snap.indexed_spans,            _fmt(snap.indexed_spans), "events"),
         ("Profiled Hosts",           snap.profiled_hosts,           _fmt(snap.profiled_hosts, 0), "hosts"),
-        ("Profiled Container Hours", snap.profiled_containers,      _fmt(snap.profiled_containers), "container-hours"),
+        ("Profiled Containers",      snap.profiled_containers,      _fmt(snap.profiled_containers), "containers (avg concurrent)"),
         ("APM Fargate Tasks",        snap.apm_fargate,              _fmt(snap.apm_fargate, 0), "tasks"),
         ("Profiled Fargate Tasks",   snap.profiled_fargate,         _fmt(snap.profiled_fargate, 0), "tasks"),
         ("Custom Events",            snap.custom_events,            _fmt(snap.custom_events), "events"),
@@ -1765,6 +1854,26 @@ def main() -> None:
             continue
         m_raw = {"usage": m_items}
         snap = extract_usage_snapshot(m_raw, m, site)
+
+        # Custom-metrics fallback: /v1/usage/summary often reports null/0
+        # custom-metric fields even when the account has custom metrics.
+        # Whenever the summary shows zero, verify against the v2 hourly usage
+        # API ("timeseries" product family) — the authoritative source.
+        if snap.custom_metrics == 0:
+            try:
+                ts_records = client.hourly_usage_timeseries(m)
+                cm_indexed, cm_ingested = custom_metrics_from_hourly(ts_records)
+                if cm_indexed or cm_ingested:
+                    print(f"    {m}: custom metrics recovered from v2 hourly usage "
+                          f"({cm_indexed:,.0f} avg indexed TS — summary reported 0)")
+                    snap.custom_metrics          = cm_indexed
+                    snap.ingested_custom_metrics = (
+                        snap.ingested_custom_metrics or cm_ingested
+                    )
+                snap.raw["hourly_usage_timeseries"] = ts_records
+            except Exception as exc:
+                print(f"    {m}: WARN — v2 hourly usage (timeseries) check failed: {exc}")
+
         cx = compute_coralogix_sizing(snap)
         all_pairs.append((snap, cx))
         print(f"    {m}: ✓  logs={cx.daily_logs_gb:.1f} GB/day  "
