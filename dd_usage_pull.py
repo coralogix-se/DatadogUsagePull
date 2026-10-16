@@ -14,7 +14,9 @@ Usage
 Environment variables (put these in a .env file next to the script):
     DD_API_KEY   Datadog API key          (needs usage_read)
     DD_APP_KEY   Datadog Application key  (needs usage_read)
-    DD_SITE      datadoghq.com | datadoghq.eu | us3/us5.datadoghq.com  (default: datadoghq.com)
+    DD_SITE      datadoghq.com | datadoghq.eu | us3/us5.datadoghq.com |
+                 ap1/ap2.datadoghq.com | ddog-gov.com  (default: datadoghq.com)
+                 A login URL such as https://app.datadoghq.eu is also accepted.
     DD_MONTH     YYYY-MM  (default: previous calendar month)
 
 This script collects usage volumes only (logs, metrics, traces, RUM, synthetics).
@@ -79,8 +81,46 @@ KNOWN_SITES: dict[str, str] = {
     "datadoghq.eu":      "https://api.datadoghq.eu",
     "us3.datadoghq.com": "https://api.us3.datadoghq.com",
     "us5.datadoghq.com": "https://api.us5.datadoghq.com",
+    "ap1.datadoghq.com": "https://api.ap1.datadoghq.com",
+    "ap2.datadoghq.com": "https://api.ap2.datadoghq.com",
     "ddog-gov.com":      "https://api.ddog-gov.com",
 }
+
+
+def normalize_site(raw: str) -> str:
+    """Accept common variants of a Datadog site and return the KNOWN_SITES key.
+
+    Customers often paste the URL they log in with (https://app.datadoghq.eu/,
+    us5.datadoghq.com/apm, api.us3.datadoghq.com …). Strip scheme, path and
+    the app./api. prefix so all of those resolve to the canonical site name.
+    """
+    s = (raw or "").strip().strip('"\'').lower()
+    if "://" in s:
+        s = s.split("://", 1)[1]
+    s = s.split("/", 1)[0].split(":", 1)[0].rstrip(".")
+    for prefix in ("app.", "api."):
+        if s.startswith(prefix) and s[len(prefix):] in KNOWN_SITES:
+            s = s[len(prefix):]
+    # US1 login host is app.datadoghq.com; the bare site is datadoghq.com
+    if s == "us1.datadoghq.com":
+        s = "datadoghq.com"
+    return s
+
+
+class DatadogAPIError(RuntimeError):
+    """Raised for 401/403 responses, with Datadog's own error text attached."""
+
+
+def _dd_error_text(resp: "requests.Response") -> str:
+    """Extract Datadog's error message(s) from a response body."""
+    try:
+        body = resp.json()
+        errs = body.get("errors") if isinstance(body, dict) else None
+        if errs:
+            return "; ".join(str(e) for e in errs)
+        return json.dumps(body)[:300]
+    except ValueError:
+        return (resp.text or "").strip()[:300] or "(empty response body)"
 
 FRESHNESS_NOTE = (
     "Datadog usage data may be delayed up to 72 hours."
@@ -97,11 +137,13 @@ class DatadogClient:
     RETRY_WAIT_S  = 2  # exponential: 2, 4, 8 seconds
 
     def __init__(self, api_key: str, app_key: str, site: str = "datadoghq.com"):
+        site = normalize_site(site)
         if site not in KNOWN_SITES:
             sys.exit(
                 f"\n  Unknown Datadog site: '{site}'\n"
                 f"  Allowed values: {', '.join(KNOWN_SITES)}\n"
             )
+        self.site     = site
         self.base_url = KNOWN_SITES[site]
         self.headers  = {
             "Accept":             "application/json",
@@ -119,11 +161,8 @@ class DatadogClient:
                     print(f"    Rate limited — waiting {wait}s (retry {attempt+1}/{self.MAX_RETRIES})")
                     time.sleep(wait)
                     continue
-                if resp.status_code == 403:
-                    raise PermissionError(
-                        f"403 Forbidden: {path}\n"
-                        "  Ensure the API and Application keys have usage_read."
-                    )
+                if resp.status_code in (401, 403):
+                    raise DatadogAPIError(self._auth_error_message(resp, path))
                 if resp.status_code == 400:
                     raise ValueError(f"400 Bad Request: {path} — {resp.text[:300]}")
                 resp.raise_for_status()
@@ -135,6 +174,55 @@ class DatadogClient:
                 print(f"    Network error ({exc}) — retrying in {wait}s")
                 time.sleep(wait)
         raise RuntimeError(f"All retries exhausted for {path}")
+
+    def _auth_error_message(self, resp: "requests.Response", path: str) -> str:
+        """Build an actionable message for a 401/403 from Datadog."""
+        dd_msg = _dd_error_text(resp)
+        lines = [
+            f"{resp.status_code} {resp.reason or 'Forbidden'} from {self.base_url}{path}",
+            f"  Datadog says: {dd_msg}",
+        ]
+        # Check whether the API key itself is valid on this site — this
+        # separates "wrong site / bad API key" from "App key lacks access".
+        api_key_valid = None
+        try:
+            v = requests.get(
+                f"{self.base_url}/api/v1/validate",
+                headers={"Accept": "application/json",
+                         "DD-API-KEY": self.headers["DD-API-KEY"]},
+                timeout=15,
+            )
+            if v.status_code == 200:
+                api_key_valid = bool(v.json().get("valid", True))
+            elif v.status_code in (401, 403):
+                api_key_valid = False
+        except Exception:
+            pass
+
+        if api_key_valid is False:
+            lines += [
+                "",
+                f"  The API key is NOT valid on site '{self.site}'. Most likely causes:",
+                "    • Wrong DD_SITE — use the site you log in to (e.g. app.datadoghq.eu",
+                "      → datadoghq.eu, us5.datadoghq.com, ap1.datadoghq.com).",
+                "    • The API key was revoked, mistyped, or is actually an App key.",
+            ]
+        else:
+            prefix = ("  The API key is valid on this site, so the problem is"
+                      if api_key_valid else "  Likely causes")
+            lines += [
+                "",
+                f"{prefix} the Application key or org:",
+                "    • The App key's owner (user or service account) lacks the",
+                "      'Usage Read' permission — by default only the Datadog Admin role has it.",
+                "    • The App key is scoped and 'usage_read' is not in its scopes.",
+                "    • The keys belong to a CHILD org — /api/v1/usage/summary is only",
+                "      available to parent-level orgs. Create the keys in the parent org.",
+                "    • The API key and App key come from different orgs.",
+                "    • Your org has an IP allowlist that blocks this machine.",
+                "  (API keys have no scopes; only the App key's permissions matter.)",
+            ]
+        return "\n".join(lines)
 
     # ── Individual endpoint wrappers ────────────────────────────────────────
 
@@ -1802,7 +1890,7 @@ def main() -> None:
     args = parser.parse_args()
 
     month   = args.month
-    site    = args.site
+    site    = normalize_site(args.site)
     out_dir = Path(args.out).expanduser().resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1834,9 +1922,12 @@ def main() -> None:
         summary_raw = client.usage_summary(start_month, month)
         n_months_returned = len(summary_raw.get("usage", []))
         print(f"        OK — {n_months_returned} month(s) returned")
+    except DatadogAPIError as exc:
+        # The usage summary is the primary data source — nothing useful can
+        # be produced without it, so stop here with the actionable reason.
+        sys.exit(f"\n  ERROR: could not read usage summary.\n  {exc}\n")
     except Exception as exc:
-        print(f"        WARN: {exc}")
-        summary_raw = {}
+        sys.exit(f"\n  ERROR: could not read usage summary: {exc}\n")
 
     # ── Process each month ────────────────────────────────────────────────
     print(f"\n  Processing {len(months)} months …")

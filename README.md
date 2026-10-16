@@ -55,8 +55,12 @@ The report also includes:
 ## Requirements
 
 - Python 3.9+
-- Datadog **API key** with `usage_read`
-- Datadog **Application key** with `usage_read`
+- Datadog **API key** from the org you want to measure (API keys have no scopes)
+- Datadog **Application key** whose owner (user or service account) has the
+  **Usage Read** permission (`usage_read`) — by default only the Datadog Admin
+  role has it. If the App key is scoped, include `usage_read` in its scopes.
+- Both keys must come from a **parent-level org** (a standalone org counts).
+  `/api/v1/usage/summary` is not available to child orgs.
 
 No `billing_read` or cost endpoints are used. The script collects **usage volumes only** — not how much you pay Datadog.
 
@@ -81,7 +85,7 @@ cp .env.example .env
 ```env
 DD_API_KEY=<your API key>
 DD_APP_KEY=<your Application key>
-DD_SITE=datadoghq.com        # or datadoghq.eu, us3.datadoghq.com, etc.
+DD_SITE=datadoghq.com        # the site you log in to — see "Datadog sites" below
 DD_MONTH=2026-03             # target month; script also pulls the 2 months before
 ```
 
@@ -128,6 +132,23 @@ python dd_usage_pull.py --month 2026-03 --site datadoghq.eu --out /tmp/reports
 
 Precedence: CLI flags → environment variables → `.env` file.
 
+### Datadog sites
+
+Use the site that matches the URL you log in to. A pasted login URL
+(e.g. `https://app.datadoghq.eu`) is also accepted.
+
+| You log in at | `DD_SITE` |
+|---|---|
+| `app.datadoghq.com` | `datadoghq.com` (US1, default) |
+| `us3.datadoghq.com` | `us3.datadoghq.com` |
+| `us5.datadoghq.com` | `us5.datadoghq.com` |
+| `app.datadoghq.eu` | `datadoghq.eu` |
+| `ap1.datadoghq.com` | `ap1.datadoghq.com` |
+| `ap2.datadoghq.com` | `ap2.datadoghq.com` |
+| `app.ddog-gov.com` | `ddog-gov.com` (US1-FED) |
+
+Keys only work on their own site — a wrong `DD_SITE` returns **403**, not 401.
+
 ---
 
 ## Datadog API endpoints used
@@ -157,7 +178,8 @@ The script does **not** call `estimated_cost`, `historical_cost`, `projected_cos
 | Error / symptom | Likely cause | Fix |
 |---|---|---|
 | `DD_API_KEY is not set` | Missing credential | Add keys to `.env` |
-| `403 Forbidden` | Missing `usage_read` | Fix App/API key scopes |
+| `403` — script says *API key is NOT valid on site* | Wrong `DD_SITE`, or bad/revoked API key | Set `DD_SITE` to the site you log in to; re-copy the API key |
+| `403` — API key valid on site | App key owner lacks **Usage Read**; scoped App key missing `usage_read`; keys from a **child org**; API/App keys from different orgs; org IP allowlist | Create the App key as an Admin (or a service account with Usage Read) in the **parent** org; check IP allowlist |
 | `400 Bad Request` | Bad month format | Use `YYYY-MM` |
 | Metric shows 0 unexpectedly | Field name / free-tier null | Inspect `datadog_raw_*.json` in the ZIP |
 | Billable summary skipped | N/A — not collected | Script only uses usage/summary |
@@ -167,9 +189,18 @@ The script does **not** call `estimated_cost`, `historical_cost`, `projected_cos
 
 ## Permissions checklist
 
-- [x] API key: `usage_read`
-- [x] App key: `usage_read`
+- [x] API key: from the parent org (API keys have no scopes)
+- [x] App key: owner has **Usage Read**; `usage_read` in scopes if the key is scoped
+- [x] Correct `DD_SITE` for the org
+
+Quick self-check (replace the host with your site's API host):
+
+```bash
+curl -s "https://api.datadoghq.com/api/v1/validate" -H "DD-API-KEY: $DD_API_KEY"
+curl -s "https://api.datadoghq.com/api/v1/usage/summary?start_month=2026-01" \
+  -H "DD-API-KEY: $DD_API_KEY" -H "DD-APPLICATION-KEY: $DD_APP_KEY"
+```
 
 `billing_read` is **not** required or used.
 
-For multi-org accounts, use a **parent organization** key if you need org-wide totals.
+For multi-org accounts, keys **must** come from the **parent organization** — child-org keys get 403 on the usage summary endpoint.
